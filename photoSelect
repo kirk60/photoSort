@@ -1,0 +1,1 @@
+#!/bin/bash\ncd "$(dirname "$0")"\npython3 photoSelect.py
