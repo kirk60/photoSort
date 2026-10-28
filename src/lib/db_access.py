@@ -5,6 +5,7 @@ inside each scan directory.  All SQL lives here; photoSelect.py should not
 import sqlite3 directly.
 """
 
+import os
 import sqlite3
 import sys
 
@@ -16,10 +17,29 @@ class PhotoDB:
 
     def __init__(self, scan_dir: str):
         """Open (and migrate if necessary) the database in *scan_dir*."""
-        import os
-        self.db_path = os.path.join(os.path.abspath(scan_dir), self.DB_FILENAME)
+        self.scan_dir = os.path.abspath(scan_dir)
+        self.db_path = os.path.join(self.scan_dir, self.DB_FILENAME)
         self.conn = None
         self._open()
+
+    def _normalize_path(self, filepath: str) -> str:
+        """Store paths inside the scan directory relative to that directory."""
+        if not os.path.isabs(filepath):
+            return os.path.normpath(filepath)
+
+        absolute_path = os.path.abspath(filepath)
+        try:
+            if os.path.commonpath((self.scan_dir, absolute_path)) == self.scan_dir:
+                return os.path.relpath(absolute_path, self.scan_dir)
+        except ValueError:
+            pass
+        return absolute_path
+
+    def _resolve_path(self, filepath: str) -> str:
+        """Return an absolute filesystem path for a path stored in the database."""
+        if os.path.isabs(filepath):
+            return filepath
+        return os.path.abspath(os.path.join(self.scan_dir, filepath))
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -74,6 +94,27 @@ class PhotoDB:
                 except Exception:
                     pass
 
+        cur.execute('SELECT id, path, favorite, location_cache, gps_position FROM photos')
+        for photo_id, filepath, favorite, location, gps in cur.fetchall():
+            relative_path = self._normalize_path(filepath)
+            if relative_path == filepath:
+                continue
+            cur.execute('SELECT id, favorite, location_cache, gps_position '
+                        'FROM photos WHERE path = ?', (relative_path,))
+            existing = cur.fetchone()
+            if existing:
+                existing_id, existing_favorite, existing_location, existing_gps = existing
+                cur.execute(
+                    'UPDATE photos SET favorite = ?, location_cache = ?, gps_position = ? '
+                    'WHERE id = ?',
+                    (max(favorite or 0, existing_favorite or 0),
+                     existing_location or location, existing_gps or gps, existing_id),
+                )
+                cur.execute('DELETE FROM photos WHERE id = ?', (photo_id,))
+            else:
+                cur.execute('UPDATE photos SET path = ? WHERE id = ?',
+                            (relative_path, photo_id))
+
         self.conn.commit()
 
     def close(self):
@@ -105,7 +146,8 @@ class PhotoDB:
             return
         try:
             cur = self.conn.cursor()
-            cur.execute('INSERT OR IGNORE INTO photos (path) VALUES (?)', (filepath,))
+            cur.execute('INSERT OR IGNORE INTO photos (path) VALUES (?)',
+                        (self._normalize_path(filepath),))
             self.conn.commit()
         except Exception as e:
             print(f"DB insert error: {e}", file=sys.stderr)
@@ -117,7 +159,8 @@ class PhotoDB:
         try:
             cur = conn.cursor()
             for path in filepaths:
-                cur.execute('INSERT OR IGNORE INTO photos (path) VALUES (?)', (path,))
+                cur.execute('INSERT OR IGNORE INTO photos (path) VALUES (?)',
+                            (self._normalize_path(path),))
             conn.commit()
         except Exception:
             pass
@@ -131,7 +174,8 @@ class PhotoDB:
             return False
         try:
             cur = self.conn.cursor()
-            cur.execute('SELECT favorite FROM photos WHERE path = ?', (filepath,))
+            cur.execute('SELECT favorite FROM photos WHERE path = ?',
+                        (self._normalize_path(filepath),))
             row = cur.fetchone()
             return bool(row[0]) if row else False
         except Exception:
@@ -144,7 +188,7 @@ class PhotoDB:
             cur = self.conn.cursor()
             val = 1 if fav else 0
             cur.execute('INSERT OR REPLACE INTO photos (path, favorite) VALUES (?, ?)',
-                        (filepath, val))
+                        (self._normalize_path(filepath), val))
             self.conn.commit()
         except Exception as e:
             print(f"DB update error: {e}", file=sys.stderr)
@@ -156,7 +200,7 @@ class PhotoDB:
         try:
             cur = self.conn.cursor()
             cur.execute('SELECT path FROM photos WHERE favorite = 1 ORDER BY path')
-            return [row[0] for row in cur.fetchall()]
+            return [self._resolve_path(row[0]) for row in cur.fetchall()]
         except Exception as e:
             print(f"Error listing favorites: {e}", file=sys.stderr)
             return []
@@ -170,7 +214,8 @@ class PhotoDB:
             return None
         try:
             cur = self.conn.cursor()
-            cur.execute('SELECT gps_position FROM photos WHERE path = ?', (filepath,))
+            cur.execute('SELECT gps_position FROM photos WHERE path = ?',
+                        (self._normalize_path(filepath),))
             row = cur.fetchone()
             return row[0] if row and row[0] else None
         except Exception:
@@ -181,8 +226,9 @@ class PhotoDB:
             return
         try:
             cur = self.conn.cursor()
-            cur.execute('INSERT OR IGNORE INTO photos (path) VALUES (?)', (filepath,))
-            cur.execute('UPDATE photos SET gps_position = ? WHERE path = ?', (gps, filepath))
+            stored_path = self._normalize_path(filepath)
+            cur.execute('INSERT OR IGNORE INTO photos (path) VALUES (?)', (stored_path,))
+            cur.execute('UPDATE photos SET gps_position = ? WHERE path = ?', (gps, stored_path))
             self.conn.commit()
         except Exception as e:
             print(f"DB gps cache error: {e}", file=sys.stderr)
@@ -192,7 +238,8 @@ class PhotoDB:
             return None
         try:
             cur = self.conn.cursor()
-            cur.execute('SELECT location_cache FROM photos WHERE path = ?', (filepath,))
+            cur.execute('SELECT location_cache FROM photos WHERE path = ?',
+                        (self._normalize_path(filepath),))
             row = cur.fetchone()
             return row[0] if row and row[0] else None
         except Exception:
@@ -203,9 +250,10 @@ class PhotoDB:
             return
         try:
             cur = self.conn.cursor()
-            cur.execute('INSERT OR IGNORE INTO photos (path) VALUES (?)', (filepath,))
+            stored_path = self._normalize_path(filepath)
+            cur.execute('INSERT OR IGNORE INTO photos (path) VALUES (?)', (stored_path,))
             cur.execute('UPDATE photos SET location_cache = ? WHERE path = ?',
-                        (location, filepath))
+                        (location, stored_path))
             self.conn.commit()
         except Exception as e:
             print(f"DB location cache error: {e}", file=sys.stderr)
@@ -216,10 +264,11 @@ class PhotoDB:
             return
         try:
             cur = self.conn.cursor()
-            cur.execute('INSERT OR IGNORE INTO photos (path) VALUES (?)', (filepath,))
+            stored_path = self._normalize_path(filepath)
+            cur.execute('INSERT OR IGNORE INTO photos (path) VALUES (?)', (stored_path,))
             if gps and gps != 'N/A':
                 cur.execute('UPDATE photos SET gps_position = ? WHERE path = ?',
-                            (gps, filepath))
+                            (gps, stored_path))
             self.conn.commit()
         except Exception as e:
             print(f"DB store error: {e}", file=sys.stderr)
@@ -235,24 +284,29 @@ class PhotoDB:
         try:
             cur = self.conn.cursor()
             cur.execute("SELECT path, gps_position, location_cache FROM photos")
-            return cur.fetchall()
+            return [
+                (self._resolve_path(path), gps, location)
+                for path, gps, location in cur.fetchall()
+            ]
         except Exception:
             return []
 
-    def update_gps_and_location(self, filepath: str, gps: str, location: str):
+    def update_gps_and_location(self, filepath: str, gps: str, location: str) -> bool:
         """Write both gps_position and location_cache for *filepath*."""
         if not self.conn:
-            return
+            return False
         try:
             cur = self.conn.cursor()
-            cur.execute('INSERT OR IGNORE INTO photos (path) VALUES (?)', (filepath,))
+            stored_path = self._normalize_path(filepath)
+            cur.execute('INSERT OR IGNORE INTO photos (path) VALUES (?)', (stored_path,))
             if gps:
                 cur.execute('UPDATE photos SET gps_position = ? WHERE path = ?',
-                            (gps, filepath))
+                            (gps, stored_path))
             if location:
                 cur.execute('UPDATE photos SET location_cache = ? WHERE path = ?',
-                            (location, filepath))
+                            (location, stored_path))
             self.conn.commit()
-        except Exception:
-            pass
-
+            return True
+        except Exception as e:
+            print(f"DB GPS/location update error: {e}", file=sys.stderr)
+            return False

@@ -4,9 +4,11 @@ import os
 import sys
 import subprocess
 import json
+import re
 import tempfile
 import threading
 import queue
+import time
 from lib.db_access import PhotoDB
 from pathlib import Path
 from datetime import datetime
@@ -38,6 +40,61 @@ def format_location(address, fallback=None):
     country = address.get('country')
     parts = [part for part in (locality, country) if part]
     return ', '.join(parts) if parts else fallback
+
+
+def gps_coordinates(gps):
+    """Parse an ExifTool GPS position into decimal latitude and longitude."""
+    dms_pattern = (
+        r"(\d+(?:\.\d+)?)\s*(?:deg|°)\s*(\d+(?:\.\d+)?)\s*['′]\s*"
+        r"(\d+(?:\.\d+)?)\s*[\"″]\s*([NSEWnsew])"
+    )
+    dms_matches = re.findall(dms_pattern, gps)
+    if len(dms_matches) >= 2:
+        coordinates = []
+        for degrees, minutes, seconds, hemisphere in dms_matches[:2]:
+            decimal = float(degrees) + float(minutes) / 60 + float(seconds) / 3600
+            if hemisphere.upper() in ('S', 'W'):
+                decimal = -decimal
+            coordinates.append(decimal)
+        latitude, longitude = coordinates
+    else:
+        numbers = re.findall(r'[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?', gps)
+        if len(numbers) < 2:
+            raise ValueError(f"Could not parse GPS coordinates: {gps}")
+        latitude, longitude = float(numbers[0]), float(numbers[1])
+        if re.search(r'\bS\b', gps, re.I):
+            latitude = -abs(latitude)
+        if re.search(r'\bN\b', gps, re.I):
+            latitude = abs(latitude)
+        if re.search(r'\bW\b', gps, re.I):
+            longitude = -abs(longitude)
+        if re.search(r'\bE\b', gps, re.I):
+            longitude = abs(longitude)
+    if not -90 <= latitude <= 90 or not -180 <= longitude <= 180:
+        raise ValueError(f"GPS coordinates out of range: {gps}")
+    return latitude, longitude
+
+
+def reverse_geocode_gps(gps, requests):
+    """Look up a GPS position and return its locality and country."""
+    latitude, longitude = gps_coordinates(gps)
+    response = requests.get(
+        "https://nominatim.openstreetmap.org/reverse",
+        params={'lat': latitude, 'lon': longitude, 'format': 'jsonv2'},
+        headers={'User-Agent': 'photoSelect/1.0'},
+        timeout=10,
+    )
+    response.raise_for_status()
+    data = response.json()
+    if not isinstance(data, dict):
+        raise ValueError("Geocoding service returned an invalid response")
+    address = data.get('address')
+    if not isinstance(address, dict) or not address.get('country'):
+        raise ValueError("Geocoding response did not include a country")
+    location = format_location(address)
+    if not location or ',' not in location:
+        raise ValueError("Geocoding response did not include a locality")
+    return location
 
 
 def has_duplicate_location_parts(location):
@@ -307,100 +364,13 @@ class PhotoSelect:
         self.info_label.config(text="Looking up location...")
         self.root.update()
         try:
-            q = gps.strip()
-            import re
-            # Try to parse DMS like 33 deg 55' 26.91" S, 151 deg 10' 11.99" E
-            def dms_to_decimal(s):
-                # Look for patterns
-                # e.g. 33 deg 55' 26.91" S or 33°55'26.91"S
-                pattern = r"(\d+(?:\.\d+)?)\s*(?:deg|°)\s*(\d+(?:\.\d+)?)\s*['′]\s*(\d+(?:\.\d+)?)\s*[\"″]\s*([NSEWnsew])"
-                m = re.findall(pattern, s)
-                if not m:
-                    return None
-                dec = 0
-                for deg, mins, secs, hemi in m:
-                    d = float(deg)
-                    mi = float(mins)
-                    sec = float(secs)
-                    val = d + mi/60.0 + sec/3600.0
-                    if hemi.upper() in ['S', 'W']:
-                        val = -val
-                    dec = val
-                # If two parts (lat/lon), return them separately - but our pattern finds all; easier to handle pairs
-                return dec
-            # Extract both coordinates
-            pattern = r"(\d+(?:\.\d+)?)\s*(?:deg|°)\s*(\d+(?:\.\d+)?)\s*['′]\s*(\d+(?:\.\d+)?)\s*[\"″]\s*([NSEWnsew])"
-            matches = re.findall(pattern, q)
-            if len(matches) >= 2:
-                def to_dec(deg, mins, secs, hemi):
-                    val = float(deg) + float(mins)/60.0 + float(secs)/3600.0
-                    if hemi.upper() in ['S', 'W']:
-                        val = -val
-                    return val
-                lat = to_dec(matches[0][0], matches[0][1], matches[0][2], matches[0][3])
-                lon = to_dec(matches[1][0], matches[1][1], matches[1][2], matches[1][3])
-                try:
-                    url = f"https://nominatim.openstreetmap.org/reverse?lat={lat}&lon={lon}&format=json"
-                    headers = {'User-Agent': 'photoSelect/1.0'}
-                    resp = requests.get(url, headers=headers, timeout=10)
-                    if resp.status_code == 200:
-                        data = resp.json()
-                        display = None
-                        if data.get('address'):
-                            display = format_location(data['address'], data.get('display_name'))
-                        if not display:
-                            display = data.get('display_name')
-                        if display:
-                            self.set_location_cache(filepath, str(display))
-                            messagebox.showinfo("Location", str(display))
-                            self.info_label.config(text="Location cached")
-                            self.root.after(2000, lambda: self.update_info_label())
-                            return
-                except Exception:
-                    pass
-            # Try decimal
-            nums = re.findall(r'[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?', q)
-            if len(nums) >= 2:
-                lat_str, lon_str = nums[0], nums[1]
-                if re.search(r'\bS\b', q, re.I):
-                    lat_str = '-' + lat_str
-                if re.search(r'\bW\b', q, re.I):
-                    lon_str = '-' + lon_str
-                try:
-                    url = f"https://nominatim.openstreetmap.org/reverse?lat={lat_str}&lon={lon_str}&format=json"
-                    headers = {'User-Agent': 'photoSelect/1.0'}
-                    resp = requests.get(url, headers=headers, timeout=10)
-                    if resp.status_code == 200:
-                        data = resp.json()
-                        display = None
-                        if data.get('address'):
-                            display = format_location(data['address'], data.get('display_name'))
-                        if not display:
-                            display = data.get('display_name')
-                        if display:
-                            self.set_location_cache(filepath, str(display))
-                            messagebox.showinfo("Location", str(display))
-                            self.info_label.config(text="Location cached")
-                            self.root.after(2000, lambda: self.update_info_label())
-                            return
-                except Exception:
-                    pass
-            # Fallback search
-            url = f"https://nominatim.openstreetmap.org/search?q={requests.utils.quote(q)}&format=json&limit=1"
-            headers = {'User-Agent': 'photoSelect/1.0'}
-            resp = requests.get(url, headers=headers, timeout=10)
-            if resp.status_code == 200:
-                data = resp.json()
-                if data:
-                    result = data[0]
-                    display = format_location(result.get('address', {}), result.get('display_name', ''))
-                    if display:
-                        self.set_location_cache(filepath, display)
-                        messagebox.showinfo("Location", display)
-                        self.info_label.config(text="Location cached")
-                        self.root.after(2000, lambda: self.update_info_label())
-                        return
-            messagebox.showinfo("Location", "Could not determine location")
+            display = reverse_geocode_gps(gps, requests)
+            self.set_location_cache(filepath, display)
+            messagebox.showinfo("Location", display)
+            self.info_label.config(text="Location cached")
+            self.root.after(2000, lambda: self.update_info_label())
+        except (requests.RequestException, ValueError) as e:
+            messagebox.showerror("Location lookup failed", str(e))
             self.update_info_label()
         except Exception as e:
             messagebox.showerror("Error", f"Location lookup failed: {e}")
@@ -926,6 +896,7 @@ class PhotoSelect:
         to_process = []
         already = 0
         skipped_nef = 0
+        missing_gps = 0
         for path, gps_pos, loc_cache in rows:
             if not os.path.exists(path):
                 continue
@@ -967,6 +938,9 @@ class PhotoSelect:
         btn.pack(pady=5)
         popup.update()
         count_done = 0
+        failures = []
+        locations_by_gps = {}
+        last_request = None
         idx = 0
         for path, gps_pos in to_process:
             if self._cancel_populate:
@@ -976,90 +950,51 @@ class PhotoSelect:
             self.info_label.config(text=f"Populating... {idx}/{len(to_process)}")
             popup.update()
             gps = gps_pos
-            if not gps or gps == "N/A":
-                try:
-                    gps = self.get_gps_position(path)
-                    if gps and gps not in ("N/A", GPS_UNAVAILABLE):
-                        self.db.set_gps_cache(path, gps)
-                except Exception:
-                    pass
-            if gps and gps not in ("N/A", GPS_UNAVAILABLE):
-                try:
-                    import re
-                    import requests
-                    q = gps.strip()
-                    display = None
-                    pattern = r"(\d+(?:\.\d+)?)\s*(?:deg|°)\s*(\d+(?:\.\d+)?)\s*['′]\s*(\d+(?:\.\d+)?)\s*[\"″]\s*([NSEWnsew])"
-                    matches = re.findall(pattern, q)
-                    if len(matches) >= 2:
-                        def to_dec(deg, mins, secs, hemi):
-                            val = float(deg) + float(mins)/60.0 + float(secs)/3600.0
-                            if hemi.upper() in ['S', 'W']:
-                                val = -val
-                            return val
-                        lat = to_dec(matches[0][0], matches[0][1], matches[0][2], matches[0][3])
-                        lon = to_dec(matches[1][0], matches[1][1], matches[1][2], matches[1][3])
-                        try:
-                            url = f"https://nominatim.openstreetmap.org/reverse?lat={lat}&lon={lon}&format=json"
-                            headers = {'User-Agent': 'photoSelect/1.0'}
-                            resp = requests.get(url, headers=headers, timeout=10)
-                            if resp.status_code == 200:
-                                data = resp.json()
-                                if data.get('address'):
-                                    display = format_location(data['address'], data.get('display_name'))
-                                if not display:
-                                    display = data.get('display_name')
-                        except Exception:
-                            pass
-                    if not display:
-                        nums = re.findall(r'[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?', q)
-                        if len(nums) >= 2:
-                            lat_str, lon_str = nums[0], nums[1]
-                            if re.search(r'\bS\b', q, re.I):
-                                lat_str = '-' + lat_str
-                            if re.search(r'\bW\b', q, re.I):
-                                lon_str = '-' + lon_str
-                            try:
-                                url = f"https://nominatim.openstreetmap.org/reverse?lat={lat_str}&lon={lon_str}&format=json"
-                                headers = {'User-Agent': 'photoSelect/1.0'}
-                                resp = requests.get(url, headers=headers, timeout=10)
-                                if resp.status_code == 200:
-                                    data = resp.json()
-                                    if data.get('address'):
-                                        display = format_location(data['address'], data.get('display_name'))
-                                    if not display:
-                                        display = data.get('display_name')
-                            except Exception:
-                                pass
-                    if not display:
-                        try:
-                            url = f"https://nominatim.openstreetmap.org/search?q={requests.utils.quote(q)}&format=json&limit=1"
-                            headers = {'User-Agent': 'photoSelect/1.0'}
-                            resp = requests.get(url, headers=headers, timeout=10)
-                            if resp.status_code == 200:
-                                data = resp.json()
-                                if data:
-                                    result = data[0]
-                                    display = format_location(
-                                        result.get('address', {}),
-                                        result.get('display_name'),
-                                    )
-                        except Exception:
-                            pass
-                    if display:
-                        self.db.update_gps_and_location(path, gps, str(display))
-                        count_done += 1
-                except Exception:
-                    pass
+            if not gps or gps in ("N/A", GPS_UNAVAILABLE):
+                gps = self.get_gps_position(path)
+                if gps and gps not in ("N/A", GPS_UNAVAILABLE):
+                    self.db.set_gps_cache(path, gps)
+            if not gps or gps in ("N/A", GPS_UNAVAILABLE):
+                missing_gps += 1
+                progress['value'] = already + skipped_nef + idx
+                popup.update()
+                continue
+            try:
+                if gps not in locations_by_gps:
+                    if last_request is not None:
+                        delay = 1.0 - (time.monotonic() - last_request)
+                        if delay > 0:
+                            time.sleep(delay)
+                    last_request = time.monotonic()
+                    locations_by_gps[gps] = reverse_geocode_gps(gps, requests)
+                display = locations_by_gps[gps]
+                if self.db.update_gps_and_location(path, gps, display):
+                    count_done += 1
+                else:
+                    failures.append(f"{path}: database update failed")
+            except requests.RequestException as error:
+                status_code = error.response.status_code if error.response is not None else "unknown"
+                failures.append(f"{path}: Reverse geocoding failed (HTTP {status_code})")
+            except ValueError as error:
+                failures.append(f"{path}: {error}")
             progress['value'] = already + skipped_nef + idx
             popup.update()
         try:
             popup.destroy()
         except Exception:
             pass
-        self.info_label.config(
-            text=f"Done. Cached locations for {count_done} photos. Skipped {skipped_nef} NEF files."
+        status = (
+            f"Done. Cached locations for {count_done} photos. "
+            f"Skipped {skipped_nef} NEF files and {missing_gps} files without GPS data."
         )
+        if failures:
+            status += f" {len(failures)} locations failed."
+        self.info_label.config(text=status)
+        if failures:
+            messagebox.showwarning(
+                "Location cache incomplete",
+                f"Could not populate locations for {len(failures)} photos.\n\n{failures[0]}",
+            )
         self.root.after(3000, lambda: self.update_info_label())
     
     def quit_app(self):

@@ -74,6 +74,7 @@ python3 src/photoSelect.py --in-dir photos/2024
 
 ## Notes
 
+- The `path` column in `photos.db` is stored relative to the selected scan directory (`--in-dir`).
 - RAW files are converted on-the-fly using ImageMagick for display
 - If a photo fails to load, an error message is shown while still allowing navigation
 - The window can be resized; images will scale to fit
