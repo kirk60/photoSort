@@ -925,30 +925,41 @@ class PhotoSelect:
         rows = self.db.get_all_for_cache_population()
         to_process = []
         already = 0
+        skipped_nef = 0
         for path, gps_pos, loc_cache in rows:
             if not os.path.exists(path):
+                continue
+            if Path(path).suffix.lower() == '.nef':
+                skipped_nef += 1
                 continue
             if loc_cache and loc_cache.strip() and not has_duplicate_location_parts(loc_cache):
                 already += 1
                 continue
             to_process.append((path, gps_pos))
-        if not to_process and already == len([r for r in rows if os.path.exists(r[0])]):
-            self.info_label.config(text="Nothing to populate.")
+        if not to_process:
+            status = "Nothing to populate."
+            if skipped_nef:
+                status += f" Skipped {skipped_nef} NEF files."
+            self.info_label.config(text=status)
             self.root.after(2000, lambda: self.update_info_label())
             return
-        total = len(to_process) + already
+        total = len(to_process) + already + skipped_nef
         popup = tk.Toplevel(self.root)
         popup.title("Populating GPS & Location Cache")
         popup.geometry("400x120")
         popup.transient(self.root)
         popup.grab_set()
-        label = tk.Label(popup, text=f"To populate: {len(to_process)}, Already populated: {already}, Total: {total}")
+        label = tk.Label(
+            popup,
+            text=(f"To populate: {len(to_process)}, Already populated: {already}, "
+                  f"Skipped NEF: {skipped_nef}, Total: {total}"),
+        )
         label.pack(pady=(10,5))
         count_label = tk.Label(popup, text=f"Processed: 0 / {len(to_process)}")
         count_label.pack(pady=(0,5))
         progress = ttk.Progressbar(popup, length=350, mode='determinate', maximum=total)
         progress.pack(pady=5)
-        progress['value'] = already
+        progress['value'] = already + skipped_nef
         def cancel():
             self._cancel_populate = True
             btn.config(state='disabled')
@@ -1040,13 +1051,15 @@ class PhotoSelect:
                         count_done += 1
                 except Exception:
                     pass
-            progress['value'] = already + idx
+            progress['value'] = already + skipped_nef + idx
             popup.update()
         try:
             popup.destroy()
         except Exception:
             pass
-        self.info_label.config(text=f"Done. Cached locations for {count_done} photos.")
+        self.info_label.config(
+            text=f"Done. Cached locations for {count_done} photos. Skipped {skipped_nef} NEF files."
+        )
         self.root.after(3000, lambda: self.update_info_label())
     
     def quit_app(self):
