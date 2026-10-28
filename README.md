@@ -36,10 +36,16 @@ From the photoSort directory:
 
 Or directly with Python:
 ```bash
-python3 photoSelect.py
+python3 src/photoSelect.py
 ```
 
 By default, it scans the current directory (`.`) recursively on startup.
+
+To start the scan in a specific subdirectory, use `--in-dir` (path relative to the current directory):
+```bash
+./photoSelect --in-dir photos/2024
+python3 src/photoSelect.py --in-dir photos/2024
+```
 
 ### Controls
 
@@ -55,6 +61,7 @@ By default, it scans the current directory (`.`) recursively on startup.
 
 - **File → Rescan Directory (r)** - Rescan the current working directory
 - **File → Select Directory...** - Choose a different directory to scan
+- **Actions → Populate GPS & Location Cache** - Populate GPS coordinates and look up cached place names
 - **Help → Controls** - Show control reference
 
 ## How it works
