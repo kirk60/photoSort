@@ -1,88 +1,139 @@
 # photoSelect
 
-A simple photo viewer that recursively scans a directory for photos and displays them one at a time in chronological (date) order.
+`photoSelect` is a Tkinter photo browser. It recursively scans a directory,
+then lets you browse supported photos in chronological order.
 
 ## Features
 
-- **Sequential viewing**: Browse all photos from all subdirectories in date order
-- **EXIF date sorting**: Uses EXIF `DateTimeOriginal`, `CreateDate`, or `MediaCreateDate` for accurate chronological ordering; falls back to file modification time if no EXIF data is available
-- **Wide format support**: Handles standard JPEG and GIF images, plus NEF, NRW, CR2, CR3, DNG, ARW, RAF, ORF, RW2, RAW, PEF, and SRW RAW formats
-- **Keyboard navigation**: Fast, simple controls with arrow keys
-- **Auto-resizing**: Images are scaled to fit the window while maintaining aspect ratio
-- **RAW handling**: Uses Pillow when possible, falls back to ImageMagick (`convert`) for RAW formats
+- Sorts photos by EXIF capture date, falling back to file modification time.
+- Displays JPEG, GIF, and common RAW formats.
+- Reads and writes image comments with ExifTool.
+- Saves favorites and photo metadata in a `photos.db` SQLite database in the
+  selected scan directory.
+- Displays camera information, GPS data, and date/location details parsed
+  from the photo's parent directory name.
+- Can cache GPS coordinates from photo metadata and look up place names from
+  those coordinates.
 
 ## Requirements
 
-- Python 3
-- [Pillow](https://python-pillow.org/) - for image loading and manipulation
-- [Tkinter](https://docs.python.org/3/library/tkinter.html) - GUI (usually included with Python)
-- [exiftool](https://exiftool.org/) - for reading EXIF dates
-- [ImageMagick](https://imagemagick.org/) - fallback for RAW file support
+- Python 3.10 or newer
+- Tkinter
+- Pillow
+- ExifTool, for EXIF dates, camera/GPS metadata, and comments
+- ImageMagick, as a fallback for displaying RAW images
 
-On Ubuntu/Debian, these can be installed with:
+Optional:
+
+- `rawpy` for RAW image decoding
+- `requests` for the **Populate Location Cache** action
+
+On Ubuntu/Debian, install the system packages and Python dependencies with:
+
 ```bash
 sudo apt install python3-tk libimage-exiftool-perl imagemagick
-pip install Pillow
+python3 -m pip install Pillow
+```
+
+For optional features:
+
+```bash
+python3 -m pip install rawpy requests
 ```
 
 ## Usage
 
-### Running the program
+Run from the repository root:
 
-From the photoSort directory:
-```bash
-./photoSelect
-```
-
-Or directly with Python:
 ```bash
 python3 src/photoSelect.py
 ```
 
-By default, it scans the current directory (`.`) recursively on startup.
+By default, the current directory is scanned recursively. To scan another
+directory, pass `--in-dir` (relative to the current working directory, or an
+absolute path):
 
-To start the scan in a specific subdirectory, use `--in-dir` (path relative to the current directory):
 ```bash
-./photoSelect --in-dir photos/2024
 python3 src/photoSelect.py --in-dir photos/2024
 ```
 
-### Controls
+You can also choose another directory from **File → Select Directory...**
+while the application is running.
 
-| Key | Action |
+## Controls
+
+| Key or action | Function |
 |---|---|
-| `←` / `→` | Previous / Next photo |
-| `Home` | Jump to first photo |
-| `End` | Jump to last photo |
+| `←` / `→` | Previous / next photo |
+| `Home` / `End` | First / last photo |
+| `f` | Toggle favorite |
+| Double-click or `Enter` on a photo in the tree | Open that photo |
 | `r` | Rescan the current directory |
 | `Esc` / `q` | Quit |
 
-### Menu Options
+The display panel also provides a favorite button and a comment editor. Select
+**Save Comment** to write the comment to the image file.
 
-- **File → Rescan Directory (r)** - Rescan the current working directory
-- **File → Select Directory...** - Choose a different directory to scan
-- **Actions → Populate GPS Cache** - Extract and cache GPS coordinates from photo metadata
-- **Actions → Populate Location Cache** - Look up and cache place names using cached GPS coordinates
-- **Help → Controls** - Show control reference
+## Menus
 
-## How it works
+- **File → Toggle Favorite (f)** - Toggle the current photo's favorite status.
+- **File → Rescan Directory (r)** - Rescan the current scan directory.
+- **File → Select Directory...** - Choose and scan a different directory.
+- **Actions → Populate GPS Cache** - Read GPS coordinates from photo metadata
+  and save them in the database.
+- **Actions → Populate Location Cache** - Reverse-geocode cached GPS
+  coordinates and save the resulting city and country. This requires
+  `requests` and an internet connection.
+- **Help → Controls** - Show the in-app control reference.
 
-1. Recursively walks through all subdirectories starting from the scan directory
-2. Collects all supported image files
-3. For each file, reads the capture date from EXIF metadata (preferring `DateTimeOriginal`)
-4. Sorts the entire collection chronologically by date
-5. Displays photos one at a time in that sorted order
+The information panel shows **User Supplied Data** (date, city, and details
+parsed from the directory name) and **Camera Information** (camera model, file
+date, GPS position, and cached GPS city and location).
 
-## Notes
+## Directory names and metadata
 
-- The `path` column in `photos.db` is stored relative to the selected scan directory (`--in-dir`).
-- The `date_from_file` column stores the photo file's last-modified time in UTC; if the file time is unavailable, it defaults to when the photo is registered in the database.
-- GPS-derived locations are stored in `city_from_gps` and `country_from_gps`, split at the first comma in the reverse-geocoded location.
-- The `date_from_name`, `city_from_name`, and `loc_details_from_name` columns are parsed from each photo's parent directory name when it follows the `YY_MM_DD[.number...]-Location` convention. Dates are stored as `YYYY-MM-DD`. The location is split at its first underscore; the city is stored before it and details after it. Camel-case words are separated with spaces (for example, `MexicoCity_FridaKahlo` becomes `Mexico City` and `Frida Kahlo`). Directory names using `_` before the location are also supported.
-- RAW files are converted on-the-fly using ImageMagick for display
-- If a photo fails to load, an error message is shown while still allowing navigation
-- The window can be resized; images will scale to fit
-- All photos across all subdirectories are treated as one continuous sequence
+The app recognizes parent directory names in the form
+`YY_MM_DD[.number...]-Location` or `YY_MM_DD[.number...]_Location`. The year is
+interpreted as 2000 plus `YY`. For example,
+`26_02_04_MexicoCity_FridaKahlo` produces:
+
+- Date: `2026-02-04`
+- City: `Mexico City`
+- Details: `Frida Kahlo`
+
+The location is split at its first underscore. CamelCase words in the city and
+details are separated with spaces. If the date or location cannot be parsed,
+the corresponding user-supplied fields are left empty.
+
+## Database
+
+Each scan directory contains a `photos.db` SQLite database. Paths inside the
+scan directory are stored relative to that directory. The `photos` table
+contains:
+
+| Column | Meaning |
+|---|---|
+| `path` | Photo path |
+| `favorite` | Favorite flag |
+| `gps_from_file` | GPS position read from the photo file |
+| `city_from_gps` | City from reverse geocoding |
+| `country_from_gps` | Country from reverse geocoding |
+| `date_from_file` | File modification time stored in UTC |
+| `date_from_name` | Date parsed from the parent directory name |
+| `city_from_name` | City parsed from the parent directory name |
+| `loc_details_from_name` | Location details parsed from the parent directory name |
+
+When browsing, photos are sorted by EXIF capture date when available, falling
+back to file modification time. The separately displayed `date_from_file`
+field is the file modification time stored in the database.
+
+## Code layout
+
+- `src/photoSelect.py` - Application controller and Tkinter interactions.
+- `src/lib/display_mgr.py` - Image and information-panel display.
+- `src/lib/dir_scan.py` - Directory traversal and image file-date detection.
+- `src/lib/photo_metadata.py` - ExifTool access, GPS parsing, and geocoding.
+- `src/lib/db_access.py` - SQLite storage and schema migrations.
 
 ## License
 
