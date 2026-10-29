@@ -18,6 +18,11 @@ from tkinter import messagebox, filedialog, ttk
 import numpy as np
 
 try:
+    import requests
+except ImportError:
+    requests = None
+
+try:
     import rawpy
     HAS_RAWPY = True
 except ImportError:
@@ -175,19 +180,105 @@ class PhotoSelect:
         
         loc_title = tk.Label(self.location_frame, text="Info", bg='#1e1e1e', fg='white', font=('Arial', 9, 'bold'))
         loc_title.pack(fill=tk.X, padx=5, pady=(5,3))
+
+        user_data_title = tk.Label(
+            self.location_frame, text="User Supplied Data", bg='#1e1e1e',
+            fg='white', font=('Arial', 9, 'bold'),
+        )
+        user_data_title.pack(anchor='w', padx=5, pady=(5,3))
+
+        user_date_title = tk.Label(
+            self.location_frame, text="Date:", bg='#1e1e1e',
+            fg='white', font=('Arial', 8, 'bold'),
+        )
+        user_date_title.pack(anchor='w', padx=(15,5), pady=(2,0))
+        self.date_from_name_label = tk.Label(
+            self.location_frame, text="N/A", bg='#1e1e1e', fg='#cccccc',
+            font=('Arial', 8), wraplength=180, justify='left',
+        )
+        self.date_from_name_label.pack(anchor='w', padx=(25,5), pady=(0,5))
+
+        user_city_title = tk.Label(
+            self.location_frame, text="City:", bg='#1e1e1e',
+            fg='white', font=('Arial', 8, 'bold'),
+        )
+        user_city_title.pack(anchor='w', padx=(15,5), pady=(0,0))
+        self.city_from_name_label = tk.Label(
+            self.location_frame, text="N/A", bg='#1e1e1e', fg='#cccccc',
+            font=('Arial', 8), wraplength=180, justify='left',
+        )
+        self.city_from_name_label.pack(anchor='w', padx=(25,5), pady=(0,5))
+
+        user_details_title = tk.Label(
+            self.location_frame, text="Details:", bg='#1e1e1e',
+            fg='white', font=('Arial', 8, 'bold'),
+        )
+        user_details_title.pack(anchor='w', padx=(15,5), pady=(0,0))
+        self.loc_details_from_name_label = tk.Label(
+            self.location_frame, text="N/A", bg='#1e1e1e', fg='#cccccc',
+            font=('Arial', 8), wraplength=180, justify='left',
+        )
+        self.loc_details_from_name_label.pack(anchor='w', padx=(25,5), pady=(0,5))
         
-        # GPS Position
-        gps_label = tk.Label(self.location_frame, text="GPS Position (click):", bg='#1e1e1e', fg='white', font=('Arial', 8, 'bold'))
-        gps_label.pack(anchor='w', padx=5, pady=(5,0))
-        self.gps_label = tk.Label(self.location_frame, text="N/A", bg='#1e1e1e', fg='#4fc3f7', font=('Arial', 8), wraplength=200, justify='left', cursor='hand2')
-        self.gps_label.pack(anchor='w', padx=5, pady=(2,5))
-        self.gps_label.bind('<Button-1>', self.lookup_gps_location)
-        
-        # Model
-        model_label = tk.Label(self.location_frame, text="Camera Model:", bg='#1e1e1e', fg='white', font=('Arial', 8, 'bold'))
-        model_label.pack(anchor='w', padx=5, pady=(5,0))
-        self.model_label = tk.Label(self.location_frame, text="N/A", bg='#1e1e1e', fg='#cccccc', font=('Arial', 8), wraplength=200, justify='left')
-        self.model_label.pack(anchor='w', padx=5, pady=(2,5))
+        camera_info_title = tk.Label(
+            self.location_frame, text="Camera Information", bg='#1e1e1e',
+            fg='white', font=('Arial', 9, 'bold'),
+        )
+        camera_info_title.pack(anchor='w', padx=5, pady=(5,3))
+
+        model_label = tk.Label(
+            self.location_frame, text="Camera Model:", bg='#1e1e1e',
+            fg='white', font=('Arial', 8, 'bold'),
+        )
+        model_label.pack(anchor='w', padx=(15,5), pady=(2,0))
+        self.model_label = tk.Label(
+            self.location_frame, text="N/A", bg='#1e1e1e', fg='#cccccc',
+            font=('Arial', 8), wraplength=180, justify='left',
+        )
+        self.model_label.pack(anchor='w', padx=(25,5), pady=(0,5))
+
+        date_title = tk.Label(
+            self.location_frame, text="Date:", bg='#1e1e1e',
+            fg='white', font=('Arial', 8, 'bold'),
+        )
+        date_title.pack(anchor='w', padx=(15,5), pady=(0,0))
+        self.date_from_file_label = tk.Label(
+            self.location_frame, text="N/A", bg='#1e1e1e', fg='#cccccc',
+            font=('Arial', 8), wraplength=180, justify='left',
+        )
+        self.date_from_file_label.pack(anchor='w', padx=(25,5), pady=(0,5))
+
+        gps_title = tk.Label(
+            self.location_frame, text="GPS Position:", bg='#1e1e1e',
+            fg='white', font=('Arial', 8, 'bold'),
+        )
+        gps_title.pack(anchor='w', padx=(15,5), pady=(2,0))
+        self.gps_label = tk.Label(
+            self.location_frame, text="N/A", bg='#1e1e1e', fg='#cccccc',
+            font=('Arial', 8), wraplength=180, justify='left', cursor='arrow',
+        )
+        self.gps_label.pack(anchor='w', padx=(25,5), pady=(0,5))
+
+        city_from_gps_title = tk.Label(
+            self.location_frame, text="City:", bg='#1e1e1e', fg='white',
+            font=('Arial', 8, 'bold'),
+        )
+        city_from_gps_title.pack(anchor='w', padx=(15,5), pady=(0,0))
+        self.city_from_gps_label = tk.Label(
+            self.location_frame, text="N/A", bg='#1e1e1e', fg='#cccccc',
+            font=('Arial', 8), wraplength=180, justify='left',
+        )
+        self.city_from_gps_label.pack(anchor='w', padx=(25,5), pady=(0,2))
+        location_from_gps_title = tk.Label(
+            self.location_frame, text="Location:", bg='#1e1e1e', fg='white',
+            font=('Arial', 8, 'bold'),
+        )
+        location_from_gps_title.pack(anchor='w', padx=(15,5), pady=(0,0))
+        self.location_from_gps_label = tk.Label(
+            self.location_frame, text="N/A", bg='#1e1e1e', fg='#cccccc',
+            font=('Arial', 8), wraplength=180, justify='left',
+        )
+        self.location_from_gps_label.pack(anchor='w', padx=(25,5), pady=(0,5))
         
         # Info label
         self.info_label = tk.Label(self.right_frame, text="", bg='black', fg='white', font=('Arial', 10))
@@ -242,7 +333,12 @@ class PhotoSelect:
         
         actions_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Actions", menu=actions_menu)
-        actions_menu.add_command(label="Populate GPS & Location Cache", command=self.populate_gps_location_cache)
+        actions_menu.add_command(
+            label="Populate GPS Cache", command=self.populate_gps_cache
+        )
+        actions_menu.add_command(
+            label="Populate Location Cache", command=self.populate_location_cache
+        )
         
         help_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Help", menu=help_menu)
@@ -345,36 +441,21 @@ class PhotoSelect:
         if self.db:
             self.db.set_location_cache(filepath, location)
 
-    def lookup_gps_location(self, event=None):
-        if not self.photos:
-            return
-        filepath = self.photos[self.current_index]['path']
-        gps = self.gps_label.cget('text')
-        if gps in ("N/A", GPS_UNAVAILABLE) or not gps:
-            return
-        cached = self.get_location_cache(filepath)
-        if cached:
-            messagebox.showinfo("Location (cached)", cached)
-            return
-        try:
-            import requests
-        except Exception:
-            messagebox.showerror("Error", "requests not available")
-            return
-        self.info_label.config(text="Looking up location...")
-        self.root.update()
-        try:
-            display = reverse_geocode_gps(gps, requests)
-            self.set_location_cache(filepath, display)
-            messagebox.showinfo("Location", display)
-            self.info_label.config(text="Location cached")
-            self.root.after(2000, lambda: self.update_info_label())
-        except (requests.RequestException, ValueError) as e:
-            messagebox.showerror("Location lookup failed", str(e))
-            self.update_info_label()
-        except Exception as e:
-            messagebox.showerror("Error", f"Location lookup failed: {e}")
-            self.update_info_label()
+    def update_gps_location_labels(self, filepath):
+        city, country = self.db.get_gps_location(filepath) if self.db else (None, None)
+        self.city_from_gps_label.config(text=city or 'N/A')
+        self.location_from_gps_label.config(text=country or 'N/A')
+
+    def update_date_from_file_label(self, filepath):
+        date_from_file = self.db.get_date_from_file(filepath) if self.db else None
+        self.date_from_file_label.config(text=date_from_file or 'N/A')
+
+    def update_user_supplied_labels(self, filepath):
+        fields = self.db.get_directory_fields(filepath) if self.db else (None, None, None)
+        date_from_name, city_from_name, loc_details_from_name = fields
+        self.date_from_name_label.config(text=date_from_name or 'N/A')
+        self.city_from_name_label.config(text=city_from_name or 'N/A')
+        self.loc_details_from_name_label.config(text=loc_details_from_name or 'N/A')
 
     def store_photo_data(self, filepath):
         if not self.db:
@@ -394,14 +475,23 @@ class PhotoSelect:
                     self.set_gps_cache(filepath, gps)
             model = self.get_camera_model(filepath)
             if gps and gps not in ("N/A", GPS_UNAVAILABLE):
-                self.gps_label.config(text=gps, cursor='hand2')
+                self.gps_label.config(text=gps)
             elif gps == GPS_UNAVAILABLE:
-                self.gps_label.config(text=GPS_UNAVAILABLE, cursor='arrow')
+                self.gps_label.config(text=GPS_UNAVAILABLE)
             else:
-                self.gps_label.config(text="N/A", cursor='arrow')
+                self.gps_label.config(text="N/A")
             self.model_label.config(text=model if model else "N/A")
+            self.update_date_from_file_label(filepath)
+            self.update_user_supplied_labels(filepath)
+            self.update_gps_location_labels(filepath)
         except Exception:
             self.gps_label.config(text="N/A", cursor='arrow')
+            self.date_from_file_label.config(text="N/A")
+            self.date_from_name_label.config(text="N/A")
+            self.city_from_name_label.config(text="N/A")
+            self.loc_details_from_name_label.config(text="N/A")
+            self.city_from_gps_label.config(text="N/A")
+            self.location_from_gps_label.config(text="N/A")
             self.model_label.config(text="N/A")
     
     def save_comment(self):
@@ -882,13 +972,17 @@ class PhotoSelect:
             print(f"{i}. {path}")
         print("=" * 40)
 
-    def populate_gps_location_cache(self):
+    def populate_gps_cache(self):
+        self._populate_cache(populate_locations=False)
+
+    def populate_location_cache(self):
+        self._populate_cache(populate_locations=True)
+
+    def _populate_cache(self, populate_locations):
         if not self.db:
             messagebox.showerror("Error", "No database connection")
             return
-        try:
-            import requests
-        except Exception:
+        if populate_locations and requests is None:
             messagebox.showerror("Error", "requests not available")
             return
         self._cancel_populate = False
@@ -903,7 +997,15 @@ class PhotoSelect:
             if Path(path).suffix.lower() == '.nef':
                 skipped_nef += 1
                 continue
-            if loc_cache and loc_cache.strip() and not has_duplicate_location_parts(loc_cache):
+            has_gps = gps_pos and gps_pos not in ("N/A", GPS_UNAVAILABLE)
+            if populate_locations:
+                if loc_cache and loc_cache.strip() and not has_duplicate_location_parts(loc_cache):
+                    already += 1
+                    continue
+                if not has_gps:
+                    missing_gps += 1
+                    continue
+            elif has_gps:
                 already += 1
                 continue
             to_process.append((path, gps_pos))
@@ -911,26 +1013,35 @@ class PhotoSelect:
             status = "Nothing to populate."
             if skipped_nef:
                 status += f" Skipped {skipped_nef} NEF files."
+            if populate_locations and missing_gps:
+                status += f" Skipped {missing_gps} files without cached GPS data."
             self.info_label.config(text=status)
             self.root.after(2000, lambda: self.update_info_label())
             return
-        total = len(to_process) + already + skipped_nef
+        total = len(to_process) + already + skipped_nef + (
+            missing_gps if populate_locations else 0
+        )
         popup = tk.Toplevel(self.root)
-        popup.title("Populating GPS & Location Cache")
+        cache_name = "Location" if populate_locations else "GPS"
+        popup.title(f"Populating {cache_name} Cache")
         popup.geometry("400x120")
         popup.transient(self.root)
         popup.grab_set()
         label = tk.Label(
             popup,
             text=(f"To populate: {len(to_process)}, Already populated: {already}, "
-                  f"Skipped NEF: {skipped_nef}, Total: {total}"),
+                  f"Skipped NEF: {skipped_nef}, "
+                  f"Missing GPS: {missing_gps if populate_locations else 0}, "
+                  f"Total: {total}"),
         )
         label.pack(pady=(10,5))
         count_label = tk.Label(popup, text=f"Processed: 0 / {len(to_process)}")
         count_label.pack(pady=(0,5))
         progress = ttk.Progressbar(popup, length=350, mode='determinate', maximum=total)
         progress.pack(pady=5)
-        progress['value'] = already + skipped_nef
+        progress['value'] = already + skipped_nef + (
+            missing_gps if populate_locations else 0
+        )
         def cancel():
             self._cancel_populate = True
             btn.config(state='disabled')
@@ -947,15 +1058,21 @@ class PhotoSelect:
                 break
             idx += 1
             count_label.config(text=f"Processed: {idx} / {len(to_process)}")
-            self.info_label.config(text=f"Populating... {idx}/{len(to_process)}")
+            self.info_label.config(
+                text=f"Populating {cache_name.lower()} cache... {idx}/{len(to_process)}"
+            )
             popup.update()
             gps = gps_pos
-            if not gps or gps in ("N/A", GPS_UNAVAILABLE):
+            if not populate_locations and (not gps or gps in ("N/A", GPS_UNAVAILABLE)):
                 gps = self.get_gps_position(path)
-                if gps and gps not in ("N/A", GPS_UNAVAILABLE):
-                    self.db.set_gps_cache(path, gps)
             if not gps or gps in ("N/A", GPS_UNAVAILABLE):
                 missing_gps += 1
+                progress['value'] = already + skipped_nef + idx
+                popup.update()
+                continue
+            if not populate_locations:
+                self.db.set_gps_cache(path, gps)
+                count_done += 1
                 progress['value'] = already + skipped_nef + idx
                 popup.update()
                 continue
@@ -972,27 +1089,36 @@ class PhotoSelect:
                     count_done += 1
                 else:
                     failures.append(f"{path}: database update failed")
-            except requests.RequestException as error:
-                status_code = error.response.status_code if error.response is not None else "unknown"
-                failures.append(f"{path}: Reverse geocoding failed (HTTP {status_code})")
             except ValueError as error:
                 failures.append(f"{path}: {error}")
-            progress['value'] = already + skipped_nef + idx
+            except Exception as error:
+                if requests is None or not isinstance(error, requests.RequestException):
+                    raise
+                status_code = error.response.status_code if error.response is not None else "unknown"
+                failures.append(f"{path}: Reverse geocoding failed (HTTP {status_code})")
+            progress['value'] = already + skipped_nef + missing_gps + idx
             popup.update()
         try:
             popup.destroy()
         except Exception:
             pass
-        status = (
-            f"Done. Cached locations for {count_done} photos. "
-            f"Skipped {skipped_nef} NEF files and {missing_gps} files without GPS data."
-        )
+        if populate_locations:
+            status = (
+                f"Done. Cached locations for {count_done} photos. "
+                f"Skipped {skipped_nef} NEF files and {missing_gps} files "
+                "without cached GPS data."
+            )
+        else:
+            status = (
+                f"Done. Cached GPS for {count_done} photos. "
+                f"Skipped {skipped_nef} NEF files and {missing_gps} files without GPS data."
+            )
         if failures:
             status += f" {len(failures)} locations failed."
         self.info_label.config(text=status)
         if failures:
             messagebox.showwarning(
-                "Location cache incomplete",
+                f"{cache_name} cache incomplete",
                 f"Could not populate locations for {len(failures)} photos.\n\n{failures[0]}",
             )
         self.root.after(3000, lambda: self.update_info_label())

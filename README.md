@@ -61,7 +61,8 @@ python3 src/photoSelect.py --in-dir photos/2024
 
 - **File → Rescan Directory (r)** - Rescan the current working directory
 - **File → Select Directory...** - Choose a different directory to scan
-- **Actions → Populate GPS & Location Cache** - Populate GPS coordinates and look up cached place names
+- **Actions → Populate GPS Cache** - Extract and cache GPS coordinates from photo metadata
+- **Actions → Populate Location Cache** - Look up and cache place names using cached GPS coordinates
 - **Help → Controls** - Show control reference
 
 ## How it works
@@ -75,8 +76,9 @@ python3 src/photoSelect.py --in-dir photos/2024
 ## Notes
 
 - The `path` column in `photos.db` is stored relative to the selected scan directory (`--in-dir`).
-- The `image_date` column stores the photo file's last-modified time in UTC; if the file time is unavailable, it defaults to when the photo is registered in the database.
-- The `dir_date` and `dir_location` columns are parsed from each photo's parent directory name when it follows the `YY_MM_DD[.number...]-Location` convention. Dates are stored as `YYYY-MM-DD`; underscores in locations are stored as spaces. Directory names using `_` before the location are also supported.
+- The `date_from_file` column stores the photo file's last-modified time in UTC; if the file time is unavailable, it defaults to when the photo is registered in the database.
+- GPS-derived locations are stored in `city_from_gps` and `country_from_gps`, split at the first comma in the reverse-geocoded location.
+- The `date_from_name`, `city_from_name`, and `loc_details_from_name` columns are parsed from each photo's parent directory name when it follows the `YY_MM_DD[.number...]-Location` convention. Dates are stored as `YYYY-MM-DD`. The location is split at its first underscore; the city is stored before it and details after it. Camel-case words are separated with spaces (for example, `MexicoCity_FridaKahlo` becomes `Mexico City` and `Frida Kahlo`). Directory names using `_` before the location are also supported.
 - RAW files are converted on-the-fly using ImageMagick for display
 - If a photo fails to load, an error message is shown while still allowing navigation
 - The window can be resized; images will scale to fit

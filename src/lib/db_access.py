@@ -65,31 +65,28 @@ class PhotoDB:
             id INTEGER PRIMARY KEY,
             path TEXT UNIQUE NOT NULL,
             favorite INTEGER DEFAULT 0,
-            location_cache TEXT,
-            gps_position TEXT,
-            image_date TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            dir_date TEXT,
-            dir_location TEXT
+            gps_from_file TEXT,
+            city_from_gps TEXT,
+            country_from_gps TEXT,
+            date_from_file TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            date_from_name TEXT,
+            city_from_name TEXT,
+            loc_details_from_name TEXT
         )''')
 
-        # Add columns introduced after initial release
         cur.execute("PRAGMA table_info(photos)")
         cols = {r[1] for r in cur.fetchall()}
-        for col in ('location_cache', 'gps_position', 'dir_date', 'dir_location'):
-            if col not in cols:
-                try:
-                    cur.execute(f'ALTER TABLE photos ADD COLUMN {col} TEXT')
-                except Exception:
-                    pass
-        cur.execute("PRAGMA table_info(photos)")
-        cols = {r[1] for r in cur.fetchall()}
-
-        # Rebuild legacy tables to add the insertion-time default and remove
-        # AUTOINCREMENT while preserving all known photo metadata.
         cur.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='photos'")
         row = cur.fetchone()
+        legacy_columns = {
+            'location_cache', 'location_from_file', 'gps_location', 'gps_position',
+            'image_date',
+            'dir_location', 'dir_date', 'dir_location_city',
+            'dir_location_details', 'location_from_name',
+        }
         needs_rebuild = (
-            'image_date' not in cols
+            bool(cols & legacy_columns)
+            or 'date_from_file' not in cols
             or (row and row[0] and 'AUTOINCREMENT' in row[0].upper())
         )
         if needs_rebuild:
@@ -97,68 +94,116 @@ class PhotoDB:
                 id INTEGER PRIMARY KEY,
                 path TEXT UNIQUE NOT NULL,
                 favorite INTEGER DEFAULT 0,
-                location_cache TEXT,
-                gps_position TEXT,
-                image_date TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                dir_date TEXT,
-                dir_location TEXT
+                gps_from_file TEXT,
+                city_from_gps TEXT,
+                country_from_gps TEXT,
+                date_from_file TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                date_from_name TEXT,
+                city_from_name TEXT,
+                loc_details_from_name TEXT
             )''')
-            has_image_date = 'image_date' in cols
-            cur.execute(
-                'SELECT id, path, favorite, location_cache, gps_position, '
-                'dir_date, dir_location'
-                + (', image_date' if has_image_date else '')
-                + ' FROM photos'
-            )
-            for photo in cur.fetchall():
-                (photo_id, filepath, favorite, location, gps, dir_date,
-                 dir_location) = photo[:7]
-                image_date = photo[7] if has_image_date else None
-                if not image_date:
-                    image_date = self._get_image_date(filepath)
+            cur.execute('SELECT * FROM photos')
+            old_columns = [column[0] for column in cur.description]
+            for values in cur.fetchall():
+                photo = dict(zip(old_columns, values))
+                filepath = photo['path']
+                date_from_file = next(
+                    (photo[name] for name in ('date_from_file', 'image_date')
+                     if photo.get(name)),
+                    None,
+                ) or self._get_image_date(filepath)
+                city_from_gps = photo.get('city_from_gps')
+                country_from_gps = photo.get('country_from_gps')
+                if city_from_gps is None and country_from_gps is None:
+                    old_location = (
+                        photo.get('location_from_file') or photo.get('location_cache') or ''
+                    )
+                    city_from_gps, separator, country = old_location.partition(',')
+                    city_from_gps = city_from_gps.strip() or None
+                    country_from_gps = country.strip() or None if separator else None
+                gps_from_file = next(
+                    (photo[name] for name in (
+                        'gps_from_file', 'gps_location', 'gps_position',
+                    ) if photo.get(name)),
+                    None,
+                )
                 cur.execute(
                     'INSERT INTO photos_new '
-                    '(id, path, favorite, location_cache, gps_position, image_date, '
-                    'dir_date, dir_location) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-                    (photo_id, filepath, favorite, location, gps, image_date,
-                     dir_date, dir_location),
+                    '(id, path, favorite, gps_from_file, city_from_gps, country_from_gps, '
+                    'date_from_file, '
+                    'date_from_name, city_from_name, loc_details_from_name) '
+                    'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                    (photo['id'], filepath, photo.get('favorite', 0) or 0,
+                     gps_from_file, city_from_gps, country_from_gps, date_from_file,
+                     photo.get('date_from_name') or photo.get('dir_date'),
+                     photo.get('city_from_name') or photo.get('dir_location_city'),
+                     photo.get('loc_details_from_name')
+                     or photo.get('location_from_name')
+                     or photo.get('dir_location_details')),
                 )
             cur.execute('DROP TABLE photos')
             cur.execute('ALTER TABLE photos_new RENAME TO photos')
 
+        cur.execute("PRAGMA table_info(photos)")
+        cols = {r[1] for r in cur.fetchall()}
+        for col in (
+            'gps_from_file', 'city_from_gps', 'country_from_gps', 'date_from_name',
+            'city_from_name', 'loc_details_from_name',
+        ):
+            if col not in cols:
+                cur.execute(f'ALTER TABLE photos ADD COLUMN {col} TEXT')
+
         cur.execute(
-            'SELECT id, path, favorite, location_cache, gps_position, image_date, '
-            'dir_date, dir_location '
+            'SELECT id, path, favorite, gps_from_file, city_from_gps, country_from_gps, '
+            'date_from_file, '
+            'date_from_name, city_from_name, loc_details_from_name '
             'FROM photos'
         )
-        for (photo_id, filepath, favorite, location, gps, image_date,
-             dir_date, dir_location) in cur.fetchall():
+        for (photo_id, filepath, favorite, gps_from_file, city_from_gps, country_from_gps, date_from_file,
+             date_from_name, city_from_name, loc_details_from_name) in cur.fetchall():
             relative_path = self._normalize_path(filepath)
-            parsed_dir_date, parsed_dir_location = self._get_directory_fields(filepath)
-            if (dir_date, dir_location) != (parsed_dir_date, parsed_dir_location):
+            (parsed_date_from_name, parsed_city_from_name,
+             parsed_loc_details_from_name) = self._get_directory_fields(filepath)
+            if (date_from_name, city_from_name, loc_details_from_name) != (
+                parsed_date_from_name, parsed_city_from_name, parsed_loc_details_from_name
+            ):
                 cur.execute(
-                    'UPDATE photos SET dir_date = ?, dir_location = ? WHERE id = ?',
-                    (parsed_dir_date, parsed_dir_location, photo_id),
+                    'UPDATE photos SET date_from_name = ?, city_from_name = ?, '
+                    'loc_details_from_name = ? WHERE id = ?',
+                    (parsed_date_from_name, parsed_city_from_name,
+                     parsed_loc_details_from_name, photo_id),
                 )
-                dir_date, dir_location = parsed_dir_date, parsed_dir_location
+                (date_from_name, city_from_name,
+                 loc_details_from_name) = (
+                    parsed_date_from_name, parsed_city_from_name,
+                    parsed_loc_details_from_name,
+                )
             if relative_path == filepath:
                 continue
-            cur.execute('SELECT id, favorite, location_cache, gps_position, image_date, '
-                        'dir_date, dir_location '
+            cur.execute('SELECT id, favorite, gps_from_file, city_from_gps, country_from_gps, '
+                        'date_from_file, '
+                        'date_from_name, city_from_name, loc_details_from_name '
                         'FROM photos WHERE path = ?', (relative_path,))
             existing = cur.fetchone()
             if existing:
-                (existing_id, existing_favorite, existing_location, existing_gps,
-                 existing_image_date, existing_dir_date, existing_dir_location) = existing
+                (existing_id, existing_favorite, existing_gps_from_file,
+                 existing_city_from_gps, existing_country_from_gps,
+                 existing_date_from_file, existing_date_from_name,
+                 existing_city_from_name, existing_loc_details_from_name) = existing
                 cur.execute(
-                    'UPDATE photos SET favorite = ?, location_cache = ?, '
-                    'gps_position = ?, image_date = ?, dir_date = ?, dir_location = ? '
-                    'WHERE id = ?',
+                    'UPDATE photos SET favorite = ?, gps_from_file = ?, '
+                    'city_from_gps = ?, country_from_gps = ?, date_from_file = ?, '
+                    'date_from_name = ?, '
+                    'city_from_name = ?, loc_details_from_name = ? WHERE id = ?',
                     (max(favorite or 0, existing_favorite or 0),
-                     existing_location or location, existing_gps or gps,
-                     existing_image_date or image_date,
-                     existing_dir_date or dir_date,
-                     existing_dir_location or dir_location, existing_id),
+                     existing_gps_from_file or gps_from_file,
+                     existing_city_from_gps or city_from_gps,
+                     existing_country_from_gps or country_from_gps,
+                     existing_date_from_file or date_from_file,
+                     existing_date_from_name or date_from_name,
+                     existing_city_from_name or city_from_name,
+                     existing_loc_details_from_name or loc_details_from_name,
+                     existing_id),
                 )
                 cur.execute('DELETE FROM photos WHERE id = ?', (photo_id,))
             else:
@@ -177,35 +222,51 @@ class PhotoDB:
         return value.strftime('%Y-%m-%d %H:%M:%S')
 
     @staticmethod
-    def _get_directory_fields(filepath: str) -> tuple[str | None, str | None]:
+    def _get_directory_fields(
+        filepath: str,
+    ) -> tuple[str | None, str | None, str | None]:
         """Parse the date and location encoded in a photo's parent directory name."""
         dirname = os.path.basename(os.path.dirname(filepath))
         match = re.fullmatch(r'(\d{2}_\d{2}_\d{2})(?:\.\d+)*(?:[-_](.+))', dirname)
         if not match:
-            return None, None
+            return None, None, None
 
         try:
             year, month, day = map(int, match.group(1).split('_'))
             date = datetime(year + 2000, month, day)
         except ValueError:
-            return None, None
+            return None, None, None
 
-        dir_date = date.strftime('%Y-%m-%d')
-        dir_location = match.group(2).replace('_', ' ')
-        return dir_date, dir_location
+        date_from_name = date.strftime('%Y-%m-%d')
+        location_city, separator, location_details = match.group(2).partition('_')
+
+        def spaced_camel_case(value: str) -> str:
+            return re.sub(r'(?<!^)(?=[A-Z])', ' ', value)
+
+        city_from_name = spaced_camel_case(location_city)
+        loc_details_from_name = (
+            spaced_camel_case(location_details.replace('_', ' '))
+            if separator and location_details else None
+        )
+        return date_from_name, city_from_name, loc_details_from_name
 
     def _insert_photo(self, cur: 'sqlite3.Cursor', filepath: str):
         """Register a photo and refresh its recorded modification time."""
         stored_path = self._normalize_path(filepath)
-        dir_date, dir_location = self._get_directory_fields(filepath)
+        date_from_name, city_from_name, loc_details_from_name = (
+            self._get_directory_fields(filepath)
+        )
         cur.execute(
-            'INSERT INTO photos (path, image_date, dir_date, dir_location) '
-            'VALUES (?, ?, ?, ?) '
+            'INSERT INTO photos '
+            '(path, date_from_file, date_from_name, city_from_name, loc_details_from_name) '
+            'VALUES (?, ?, ?, ?, ?) '
             'ON CONFLICT(path) DO UPDATE SET '
-            'image_date = excluded.image_date, '
-            'dir_date = excluded.dir_date, '
-            'dir_location = excluded.dir_location',
-            (stored_path, self._get_image_date(filepath), dir_date, dir_location),
+            'date_from_file = excluded.date_from_file, '
+            'date_from_name = excluded.date_from_name, '
+            'city_from_name = excluded.city_from_name, '
+            'loc_details_from_name = excluded.loc_details_from_name',
+            (stored_path, self._get_image_date(filepath), date_from_name,
+             city_from_name, loc_details_from_name),
         )
 
     def close(self):
@@ -304,12 +365,39 @@ class PhotoDB:
             return None
         try:
             cur = self.conn.cursor()
-            cur.execute('SELECT gps_position FROM photos WHERE path = ?',
+            cur.execute('SELECT gps_from_file FROM photos WHERE path = ?',
                         (self._normalize_path(filepath),))
             row = cur.fetchone()
             return row[0] if row and row[0] else None
         except Exception:
             return None
+
+    def get_date_from_file(self, filepath: str) -> 'str | None':
+        if not self.conn:
+            return None
+        try:
+            cur = self.conn.cursor()
+            cur.execute('SELECT date_from_file FROM photos WHERE path = ?',
+                        (self._normalize_path(filepath),))
+            row = cur.fetchone()
+            return row[0] if row and row[0] else None
+        except Exception:
+            return None
+
+    def get_directory_fields(self, filepath: str) -> 'tuple[str | None, str | None, str | None]':
+        if not self.conn:
+            return None, None, None
+        try:
+            cur = self.conn.cursor()
+            cur.execute(
+                'SELECT date_from_name, city_from_name, loc_details_from_name '
+                'FROM photos WHERE path = ?',
+                (self._normalize_path(filepath),),
+            )
+            row = cur.fetchone()
+            return row if row else (None, None, None)
+        except Exception:
+            return None, None, None
 
     def set_gps_cache(self, filepath: str, gps: str):
         if not self.conn or not gps:
@@ -318,7 +406,7 @@ class PhotoDB:
             cur = self.conn.cursor()
             stored_path = self._normalize_path(filepath)
             self._insert_photo(cur, filepath)
-            cur.execute('UPDATE photos SET gps_position = ? WHERE path = ?', (gps, stored_path))
+            cur.execute('UPDATE photos SET gps_from_file = ? WHERE path = ?', (gps, stored_path))
             self.conn.commit()
         except Exception as e:
             print(f"DB gps cache error: {e}", file=sys.stderr)
@@ -328,12 +416,28 @@ class PhotoDB:
             return None
         try:
             cur = self.conn.cursor()
-            cur.execute('SELECT location_cache FROM photos WHERE path = ?',
+            cur.execute('SELECT city_from_gps, country_from_gps FROM photos WHERE path = ?',
                         (self._normalize_path(filepath),))
             row = cur.fetchone()
-            return row[0] if row and row[0] else None
+            if not row:
+                return None
+            return ', '.join(part for part in row if part) or None
         except Exception:
             return None
+
+    def get_gps_location(self, filepath: str) -> 'tuple[str | None, str | None]':
+        if not self.conn:
+            return None, None
+        try:
+            cur = self.conn.cursor()
+            cur.execute(
+                'SELECT city_from_gps, country_from_gps FROM photos WHERE path = ?',
+                (self._normalize_path(filepath),),
+            )
+            row = cur.fetchone()
+            return (row[0], row[1]) if row else (None, None)
+        except Exception:
+            return None, None
 
     def set_location_cache(self, filepath: str, location: str):
         if not self.conn:
@@ -342,8 +446,12 @@ class PhotoDB:
             cur = self.conn.cursor()
             stored_path = self._normalize_path(filepath)
             self._insert_photo(cur, filepath)
-            cur.execute('UPDATE photos SET location_cache = ? WHERE path = ?',
-                        (location, stored_path))
+            city, separator, country = location.partition(',')
+            cur.execute(
+                'UPDATE photos SET city_from_gps = ?, country_from_gps = ? WHERE path = ?',
+                (city.strip() or None, country.strip() or None if separator else None,
+                 stored_path),
+            )
             self.conn.commit()
         except Exception as e:
             print(f"DB location cache error: {e}", file=sys.stderr)
@@ -357,32 +465,36 @@ class PhotoDB:
             stored_path = self._normalize_path(filepath)
             self._insert_photo(cur, filepath)
             if gps and gps != 'N/A':
-                cur.execute('UPDATE photos SET gps_position = ? WHERE path = ?',
+                cur.execute('UPDATE photos SET gps_from_file = ? WHERE path = ?',
                             (gps, stored_path))
             self.conn.commit()
         except Exception as e:
             print(f"DB store error: {e}", file=sys.stderr)
 
     # ------------------------------------------------------------------
-    # Bulk population helpers (used by populate_gps_location_cache)
+    # Bulk population helpers (used by GPS and location cache actions)
     # ------------------------------------------------------------------
 
     def get_all_for_cache_population(self) -> 'list[tuple]':
-        """Return (path, gps_position, location_cache) for every known photo."""
+        """Return (path, gps_from_file, formatted GPS location) for every known photo."""
         if not self.conn:
             return []
         try:
             cur = self.conn.cursor()
-            cur.execute("SELECT path, gps_position, location_cache FROM photos")
+            cur.execute(
+                'SELECT path, gps_from_file, city_from_gps, country_from_gps FROM photos'
+            )
             return [
-                (self._resolve_path(path), gps, location)
-                for path, gps, location in cur.fetchall()
+                (self._resolve_path(path), gps, ', '.join(
+                    part for part in (city, country) if part
+                ))
+                for path, gps, city, country in cur.fetchall()
             ]
         except Exception:
             return []
 
     def update_gps_and_location(self, filepath: str, gps: str, location: str) -> bool:
-        """Write both gps_position and location_cache for *filepath*."""
+        """Write GPS coordinates and split GPS-derived city/country for *filepath*."""
         if not self.conn:
             return False
         try:
@@ -390,11 +502,16 @@ class PhotoDB:
             stored_path = self._normalize_path(filepath)
             self._insert_photo(cur, filepath)
             if gps:
-                cur.execute('UPDATE photos SET gps_position = ? WHERE path = ?',
+                cur.execute('UPDATE photos SET gps_from_file = ? WHERE path = ?',
                             (gps, stored_path))
             if location:
-                cur.execute('UPDATE photos SET location_cache = ? WHERE path = ?',
-                            (location, stored_path))
+                city, separator, country = location.partition(',')
+                cur.execute(
+                    'UPDATE photos SET city_from_gps = ?, country_from_gps = ? '
+                    'WHERE path = ?',
+                    (city.strip() or None, country.strip() or None if separator else None,
+                     stored_path),
+                )
             self.conn.commit()
             return True
         except Exception as e:
