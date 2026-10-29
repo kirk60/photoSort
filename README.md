@@ -76,6 +76,7 @@ python3 src/photoSelect.py --in-dir photos/2024
 
 - The `path` column in `photos.db` is stored relative to the selected scan directory (`--in-dir`).
 - The `image_date` column stores the photo file's last-modified time in UTC; if the file time is unavailable, it defaults to when the photo is registered in the database.
+- The `dir_date` and `dir_location` columns are parsed from each photo's parent directory name when it follows the `YY_MM_DD[.number...]-Location` convention. Dates are stored as `YYYY-MM-DD`; underscores in locations are stored as spaces. Directory names using `_` before the location are also supported.
 - RAW files are converted on-the-fly using ImageMagick for display
 - If a photo fails to load, an error message is shown while still allowing navigation
 - The window can be resized; images will scale to fit

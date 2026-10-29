@@ -6,6 +6,7 @@ import sqlite3 directly.
 """
 
 import os
+import re
 import sqlite3
 import sys
 from datetime import datetime, timezone
@@ -66,13 +67,15 @@ class PhotoDB:
             favorite INTEGER DEFAULT 0,
             location_cache TEXT,
             gps_position TEXT,
-            image_date TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            image_date TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            dir_date TEXT,
+            dir_location TEXT
         )''')
 
         # Add columns introduced after initial release
         cur.execute("PRAGMA table_info(photos)")
         cols = {r[1] for r in cur.fetchall()}
-        for col in ('location_cache', 'gps_position'):
+        for col in ('location_cache', 'gps_position', 'dir_date', 'dir_location'):
             if col not in cols:
                 try:
                     cur.execute(f'ALTER TABLE photos ADD COLUMN {col} TEXT')
@@ -96,49 +99,66 @@ class PhotoDB:
                 favorite INTEGER DEFAULT 0,
                 location_cache TEXT,
                 gps_position TEXT,
-                image_date TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                image_date TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                dir_date TEXT,
+                dir_location TEXT
             )''')
             has_image_date = 'image_date' in cols
             cur.execute(
-                'SELECT id, path, favorite, location_cache, gps_position'
+                'SELECT id, path, favorite, location_cache, gps_position, '
+                'dir_date, dir_location'
                 + (', image_date' if has_image_date else '')
                 + ' FROM photos'
             )
             for photo in cur.fetchall():
-                photo_id, filepath, favorite, location, gps = photo[:5]
-                image_date = photo[5] if has_image_date else None
+                (photo_id, filepath, favorite, location, gps, dir_date,
+                 dir_location) = photo[:7]
+                image_date = photo[7] if has_image_date else None
                 if not image_date:
                     image_date = self._get_image_date(filepath)
                 cur.execute(
                     'INSERT INTO photos_new '
-                    '(id, path, favorite, location_cache, gps_position, image_date) '
-                    'VALUES (?, ?, ?, ?, ?, ?)',
-                    (photo_id, filepath, favorite, location, gps, image_date),
+                    '(id, path, favorite, location_cache, gps_position, image_date, '
+                    'dir_date, dir_location) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+                    (photo_id, filepath, favorite, location, gps, image_date,
+                     dir_date, dir_location),
                 )
             cur.execute('DROP TABLE photos')
             cur.execute('ALTER TABLE photos_new RENAME TO photos')
 
         cur.execute(
-            'SELECT id, path, favorite, location_cache, gps_position, image_date '
+            'SELECT id, path, favorite, location_cache, gps_position, image_date, '
+            'dir_date, dir_location '
             'FROM photos'
         )
-        for photo_id, filepath, favorite, location, gps, image_date in cur.fetchall():
+        for (photo_id, filepath, favorite, location, gps, image_date,
+             dir_date, dir_location) in cur.fetchall():
             relative_path = self._normalize_path(filepath)
+            parsed_dir_date, parsed_dir_location = self._get_directory_fields(filepath)
+            if (dir_date, dir_location) != (parsed_dir_date, parsed_dir_location):
+                cur.execute(
+                    'UPDATE photos SET dir_date = ?, dir_location = ? WHERE id = ?',
+                    (parsed_dir_date, parsed_dir_location, photo_id),
+                )
+                dir_date, dir_location = parsed_dir_date, parsed_dir_location
             if relative_path == filepath:
                 continue
-            cur.execute('SELECT id, favorite, location_cache, gps_position, image_date '
+            cur.execute('SELECT id, favorite, location_cache, gps_position, image_date, '
+                        'dir_date, dir_location '
                         'FROM photos WHERE path = ?', (relative_path,))
             existing = cur.fetchone()
             if existing:
                 (existing_id, existing_favorite, existing_location, existing_gps,
-                 existing_image_date) = existing
+                 existing_image_date, existing_dir_date, existing_dir_location) = existing
                 cur.execute(
                     'UPDATE photos SET favorite = ?, location_cache = ?, '
-                    'gps_position = ?, image_date = ? '
+                    'gps_position = ?, image_date = ?, dir_date = ?, dir_location = ? '
                     'WHERE id = ?',
                     (max(favorite or 0, existing_favorite or 0),
                      existing_location or location, existing_gps or gps,
-                     existing_image_date or image_date, existing_id),
+                     existing_image_date or image_date,
+                     existing_dir_date or dir_date,
+                     existing_dir_location or dir_location, existing_id),
                 )
                 cur.execute('DELETE FROM photos WHERE id = ?', (photo_id,))
             else:
@@ -156,13 +176,36 @@ class PhotoDB:
             value = datetime.now(timezone.utc)
         return value.strftime('%Y-%m-%d %H:%M:%S')
 
+    @staticmethod
+    def _get_directory_fields(filepath: str) -> tuple[str | None, str | None]:
+        """Parse the date and location encoded in a photo's parent directory name."""
+        dirname = os.path.basename(os.path.dirname(filepath))
+        match = re.fullmatch(r'(\d{2}_\d{2}_\d{2})(?:\.\d+)*(?:[-_](.+))', dirname)
+        if not match:
+            return None, None
+
+        try:
+            year, month, day = map(int, match.group(1).split('_'))
+            date = datetime(year + 2000, month, day)
+        except ValueError:
+            return None, None
+
+        dir_date = date.strftime('%Y-%m-%d')
+        dir_location = match.group(2).replace('_', ' ')
+        return dir_date, dir_location
+
     def _insert_photo(self, cur: 'sqlite3.Cursor', filepath: str):
         """Register a photo and refresh its recorded modification time."""
         stored_path = self._normalize_path(filepath)
+        dir_date, dir_location = self._get_directory_fields(filepath)
         cur.execute(
-            'INSERT INTO photos (path, image_date) VALUES (?, ?) '
-            'ON CONFLICT(path) DO UPDATE SET image_date = excluded.image_date',
-            (stored_path, self._get_image_date(filepath)),
+            'INSERT INTO photos (path, image_date, dir_date, dir_location) '
+            'VALUES (?, ?, ?, ?) '
+            'ON CONFLICT(path) DO UPDATE SET '
+            'image_date = excluded.image_date, '
+            'dir_date = excluded.dir_date, '
+            'dir_location = excluded.dir_location',
+            (stored_path, self._get_image_date(filepath), dir_date, dir_location),
         )
 
     def close(self):
