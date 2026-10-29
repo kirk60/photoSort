@@ -8,6 +8,7 @@ import sqlite3 directly.
 import os
 import sqlite3
 import sys
+from datetime import datetime, timezone
 
 
 class PhotoDB:
@@ -64,25 +65,9 @@ class PhotoDB:
             path TEXT UNIQUE NOT NULL,
             favorite INTEGER DEFAULT 0,
             location_cache TEXT,
-            gps_position TEXT
+            gps_position TEXT,
+            image_date TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         )''')
-
-        # Migrate away from AUTOINCREMENT if present
-        cur.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='photos'")
-        row = cur.fetchone()
-        if row and row[0] and 'AUTOINCREMENT' in row[0].upper():
-            cur.execute('''CREATE TABLE photos_new (
-                id INTEGER PRIMARY KEY,
-                path TEXT UNIQUE NOT NULL,
-                favorite INTEGER DEFAULT 0,
-                location_cache TEXT,
-                gps_position TEXT
-            )''')
-            cur.execute('INSERT OR REPLACE INTO photos_new (id, path, favorite) '
-                        'SELECT id, path, favorite FROM photos')
-            cur.execute('DROP TABLE photos')
-            cur.execute('ALTER TABLE photos_new RENAME TO photos')
-            cur.execute('DROP TABLE IF EXISTS sqlite_sequence')
 
         # Add columns introduced after initial release
         cur.execute("PRAGMA table_info(photos)")
@@ -93,22 +78,67 @@ class PhotoDB:
                     cur.execute(f'ALTER TABLE photos ADD COLUMN {col} TEXT')
                 except Exception:
                     pass
+        cur.execute("PRAGMA table_info(photos)")
+        cols = {r[1] for r in cur.fetchall()}
 
-        cur.execute('SELECT id, path, favorite, location_cache, gps_position FROM photos')
-        for photo_id, filepath, favorite, location, gps in cur.fetchall():
+        # Rebuild legacy tables to add the insertion-time default and remove
+        # AUTOINCREMENT while preserving all known photo metadata.
+        cur.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='photos'")
+        row = cur.fetchone()
+        needs_rebuild = (
+            'image_date' not in cols
+            or (row and row[0] and 'AUTOINCREMENT' in row[0].upper())
+        )
+        if needs_rebuild:
+            cur.execute('''CREATE TABLE photos_new (
+                id INTEGER PRIMARY KEY,
+                path TEXT UNIQUE NOT NULL,
+                favorite INTEGER DEFAULT 0,
+                location_cache TEXT,
+                gps_position TEXT,
+                image_date TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )''')
+            has_image_date = 'image_date' in cols
+            cur.execute(
+                'SELECT id, path, favorite, location_cache, gps_position'
+                + (', image_date' if has_image_date else '')
+                + ' FROM photos'
+            )
+            for photo in cur.fetchall():
+                photo_id, filepath, favorite, location, gps = photo[:5]
+                image_date = photo[5] if has_image_date else None
+                if not image_date:
+                    image_date = self._get_image_date(filepath)
+                cur.execute(
+                    'INSERT INTO photos_new '
+                    '(id, path, favorite, location_cache, gps_position, image_date) '
+                    'VALUES (?, ?, ?, ?, ?, ?)',
+                    (photo_id, filepath, favorite, location, gps, image_date),
+                )
+            cur.execute('DROP TABLE photos')
+            cur.execute('ALTER TABLE photos_new RENAME TO photos')
+
+        cur.execute(
+            'SELECT id, path, favorite, location_cache, gps_position, image_date '
+            'FROM photos'
+        )
+        for photo_id, filepath, favorite, location, gps, image_date in cur.fetchall():
             relative_path = self._normalize_path(filepath)
             if relative_path == filepath:
                 continue
-            cur.execute('SELECT id, favorite, location_cache, gps_position '
+            cur.execute('SELECT id, favorite, location_cache, gps_position, image_date '
                         'FROM photos WHERE path = ?', (relative_path,))
             existing = cur.fetchone()
             if existing:
-                existing_id, existing_favorite, existing_location, existing_gps = existing
+                (existing_id, existing_favorite, existing_location, existing_gps,
+                 existing_image_date) = existing
                 cur.execute(
-                    'UPDATE photos SET favorite = ?, location_cache = ?, gps_position = ? '
+                    'UPDATE photos SET favorite = ?, location_cache = ?, '
+                    'gps_position = ?, image_date = ? '
                     'WHERE id = ?',
                     (max(favorite or 0, existing_favorite or 0),
-                     existing_location or location, existing_gps or gps, existing_id),
+                     existing_location or location, existing_gps or gps,
+                     existing_image_date or image_date, existing_id),
                 )
                 cur.execute('DELETE FROM photos WHERE id = ?', (photo_id,))
             else:
@@ -116,6 +146,24 @@ class PhotoDB:
                             (relative_path, photo_id))
 
         self.conn.commit()
+
+    def _get_image_date(self, filepath: str) -> str:
+        """Return the file modification time, or the current UTC time if unavailable."""
+        try:
+            modified = os.stat(self._resolve_path(filepath)).st_mtime
+            value = datetime.fromtimestamp(modified, timezone.utc)
+        except OSError:
+            value = datetime.now(timezone.utc)
+        return value.strftime('%Y-%m-%d %H:%M:%S')
+
+    def _insert_photo(self, cur: 'sqlite3.Cursor', filepath: str):
+        """Register a photo and refresh its recorded modification time."""
+        stored_path = self._normalize_path(filepath)
+        cur.execute(
+            'INSERT INTO photos (path, image_date) VALUES (?, ?) '
+            'ON CONFLICT(path) DO UPDATE SET image_date = excluded.image_date',
+            (stored_path, self._get_image_date(filepath)),
+        )
 
     def close(self):
         """Close the database connection."""
@@ -146,8 +194,7 @@ class PhotoDB:
             return
         try:
             cur = self.conn.cursor()
-            cur.execute('INSERT OR IGNORE INTO photos (path) VALUES (?)',
-                        (self._normalize_path(filepath),))
+            self._insert_photo(cur, filepath)
             self.conn.commit()
         except Exception as e:
             print(f"DB insert error: {e}", file=sys.stderr)
@@ -159,8 +206,7 @@ class PhotoDB:
         try:
             cur = conn.cursor()
             for path in filepaths:
-                cur.execute('INSERT OR IGNORE INTO photos (path) VALUES (?)',
-                            (self._normalize_path(path),))
+                self._insert_photo(cur, path)
             conn.commit()
         except Exception:
             pass
@@ -187,8 +233,9 @@ class PhotoDB:
         try:
             cur = self.conn.cursor()
             val = 1 if fav else 0
-            cur.execute('INSERT OR REPLACE INTO photos (path, favorite) VALUES (?, ?)',
-                        (self._normalize_path(filepath), val))
+            self._insert_photo(cur, filepath)
+            cur.execute('UPDATE photos SET favorite = ? WHERE path = ?',
+                        (val, self._normalize_path(filepath)))
             self.conn.commit()
         except Exception as e:
             print(f"DB update error: {e}", file=sys.stderr)
@@ -227,7 +274,7 @@ class PhotoDB:
         try:
             cur = self.conn.cursor()
             stored_path = self._normalize_path(filepath)
-            cur.execute('INSERT OR IGNORE INTO photos (path) VALUES (?)', (stored_path,))
+            self._insert_photo(cur, filepath)
             cur.execute('UPDATE photos SET gps_position = ? WHERE path = ?', (gps, stored_path))
             self.conn.commit()
         except Exception as e:
@@ -251,7 +298,7 @@ class PhotoDB:
         try:
             cur = self.conn.cursor()
             stored_path = self._normalize_path(filepath)
-            cur.execute('INSERT OR IGNORE INTO photos (path) VALUES (?)', (stored_path,))
+            self._insert_photo(cur, filepath)
             cur.execute('UPDATE photos SET location_cache = ? WHERE path = ?',
                         (location, stored_path))
             self.conn.commit()
@@ -265,7 +312,7 @@ class PhotoDB:
         try:
             cur = self.conn.cursor()
             stored_path = self._normalize_path(filepath)
-            cur.execute('INSERT OR IGNORE INTO photos (path) VALUES (?)', (stored_path,))
+            self._insert_photo(cur, filepath)
             if gps and gps != 'N/A':
                 cur.execute('UPDATE photos SET gps_position = ? WHERE path = ?',
                             (gps, stored_path))
@@ -298,7 +345,7 @@ class PhotoDB:
         try:
             cur = self.conn.cursor()
             stored_path = self._normalize_path(filepath)
-            cur.execute('INSERT OR IGNORE INTO photos (path) VALUES (?)', (stored_path,))
+            self._insert_photo(cur, filepath)
             if gps:
                 cur.execute('UPDATE photos SET gps_position = ? WHERE path = ?',
                             (gps, stored_path))
