@@ -57,8 +57,10 @@ absolute path):
 python3 src/photoSelect.py --in-dir photos/2024
 ```
 
-Use `--threads N` to scan up to `N` directories concurrently. Each worker
-handles one directory at a time; the default is one scanning thread:
+Use `--threads N` to scan up to `N` directories concurrently and to limit
+parallel GPS metadata reads and location-cache processing. Reverse-geocoding
+requests remain rate-limited to one per second. Each scan worker handles one
+directory at a time; the default is one thread:
 
 ```bash
 python3 src/photoSelect.py --in-dir photos/2024 --threads 4

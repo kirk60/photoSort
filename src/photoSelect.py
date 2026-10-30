@@ -8,6 +8,7 @@ import tempfile
 import threading
 import queue
 import time
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from lib.db_access import PhotoDB
 from pathlib import Path
 from PIL import Image
@@ -661,10 +662,88 @@ class PhotoSelect:
         popup.update()
         count_done = 0
         failures = []
-        locations_by_gps = {}
         last_request = None
         idx = 0
-        for path, gps_pos in to_process:
+        gps_executor = None
+        if populate_locations:
+            location_lock = threading.Lock()
+
+            def reverse_geocode(gps):
+                nonlocal last_request
+                with location_lock:
+                    if self._cancel_populate:
+                        return None
+                    if last_request is not None:
+                        delay = 1.0 - (time.monotonic() - last_request)
+                        if delay > 0:
+                            time.sleep(delay)
+                    last_request = time.monotonic()
+                return photo_metadata.reverse_geocode_gps(gps, requests)
+
+            paths_by_gps = {}
+            for path, gps in to_process:
+                paths_by_gps.setdefault(gps, []).append(path)
+            executor = ThreadPoolExecutor(max_workers=self.scan_threads)
+            pending = {
+                executor.submit(reverse_geocode, gps): gps
+                for gps in paths_by_gps
+            }
+            while pending and not self._cancel_populate:
+                count_label.config(
+                    text=f"Processed: {idx} / {len(to_process)}"
+                )
+                self.display.set_status(
+                    f"Populating location cache... {idx}/{len(to_process)}"
+                )
+                popup.update()
+                completed, _ = wait(
+                    pending, timeout=0.1, return_when=FIRST_COMPLETED,
+                )
+                for future in completed:
+                    gps = pending.pop(future)
+                    paths = paths_by_gps[gps]
+                    try:
+                        display = future.result()
+                        if display is None:
+                            idx += len(paths)
+                            progress['value'] = already + skipped_nef + missing_gps + idx
+                            popup.update()
+                            continue
+                        for path in paths:
+                            if self.db.update_gps_and_location(path, gps, display):
+                                count_done += 1
+                            else:
+                                failures.append(f"{path}: database update failed")
+                    except ValueError as error:
+                        failures.extend(f"{path}: {error}" for path in paths)
+                    except Exception as error:
+                        if requests is None or not isinstance(error, requests.RequestException):
+                            executor.shutdown(wait=True, cancel_futures=True)
+                            raise
+                        status_code = error.response.status_code if error.response is not None else "unknown"
+                        failures.extend(
+                            f"{path}: Reverse geocoding failed (HTTP {status_code})"
+                            for path in paths
+                        )
+                    idx += len(paths)
+                    progress['value'] = already + skipped_nef + missing_gps + idx
+                    popup.update()
+            if self._cancel_populate:
+                for future in pending:
+                    future.cancel()
+            executor.shutdown(
+                wait=True,
+                cancel_futures=self._cancel_populate,
+            )
+
+        else:
+            gps_executor = ThreadPoolExecutor(max_workers=self.scan_threads)
+            gps_futures = {
+                path: gps_executor.submit(photo_metadata.get_gps_position, path)
+                for path, gps_pos in to_process
+                if not gps_pos or gps_pos in ("N/A", GPS_UNAVAILABLE)
+            }
+        for path, gps_pos in (() if populate_locations else to_process):
             if self._cancel_populate:
                 break
             idx += 1
@@ -675,7 +754,13 @@ class PhotoSelect:
             popup.update()
             gps = gps_pos
             if not populate_locations and (not gps or gps in ("N/A", GPS_UNAVAILABLE)):
-                gps = photo_metadata.get_gps_position(path)
+                try:
+                    gps = gps_futures[path].result()
+                except Exception as error:
+                    failures.append(f"{path}: GPS metadata read failed: {error}")
+                    progress['value'] = already + skipped_nef + idx
+                    popup.update()
+                    continue
             if not gps or gps in ("N/A", GPS_UNAVAILABLE):
                 missing_gps += 1
                 progress['value'] = already + skipped_nef + idx
@@ -687,28 +772,13 @@ class PhotoSelect:
                 progress['value'] = already + skipped_nef + idx
                 popup.update()
                 continue
-            try:
-                if gps not in locations_by_gps:
-                    if last_request is not None:
-                        delay = 1.0 - (time.monotonic() - last_request)
-                        if delay > 0:
-                            time.sleep(delay)
-                    last_request = time.monotonic()
-                    locations_by_gps[gps] = photo_metadata.reverse_geocode_gps(gps, requests)
-                display = locations_by_gps[gps]
-                if self.db.update_gps_and_location(path, gps, display):
-                    count_done += 1
-                else:
-                    failures.append(f"{path}: database update failed")
-            except ValueError as error:
-                failures.append(f"{path}: {error}")
-            except Exception as error:
-                if requests is None or not isinstance(error, requests.RequestException):
-                    raise
-                status_code = error.response.status_code if error.response is not None else "unknown"
-                failures.append(f"{path}: Reverse geocoding failed (HTTP {status_code})")
             progress['value'] = already + skipped_nef + missing_gps + idx
             popup.update()
+        if gps_executor:
+            gps_executor.shutdown(
+                wait=True,
+                cancel_futures=self._cancel_populate,
+            )
         try:
             popup.destroy()
         except Exception:
