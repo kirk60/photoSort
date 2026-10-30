@@ -82,10 +82,11 @@ The display panel also provides a favorite button and a comment editor. Select
 - **File → Export** - Copy favorited photos to `exports/<scan-directory-name>`
   in the current working directory. Non-JPEG photos are converted to JPEG at
   their full available resolution without upscaling. The database `export_name`
-  is used as the output filename, with the appropriate extension. Exported
-  photos are flat in that directory; favorites with duplicate output filenames
-  cannot be exported together. RAW conversion uses `rawpy` when installed,
-  otherwise ImageMagick.
+  is used as the output filename, with the appropriate extension. The output
+  directory is emptied before each export, including when there are no
+  favorites. Exported photos are flat in that directory; favorites with
+  duplicate output filenames cannot be exported together. RAW conversion uses
+  `rawpy` when installed, otherwise ImageMagick.
 - **Actions → Populate GPS Cache** - Read GPS coordinates from photo metadata
   and save them in the database.
 - **Actions → Populate Location Cache** - Reverse-geocode cached GPS
