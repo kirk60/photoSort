@@ -145,6 +145,12 @@ field is the file modification time stored in the database.
 - `src/lib/db_access.py` - SQLite storage and schema migrations.
 - `src/lib/exports.py` - Favorite selection and photo export.
 
+## Architecture
+
+![photoSelect architecture](docs/photoSelect-architecture.svg)
+
+The editable Graphviz source is [`docs/photoSelect-architecture.dot`](docs/photoSelect-architecture.dot).
+
 ## License
 
 This is a personal utility script.

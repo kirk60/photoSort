@@ -1,0 +1,88 @@
+digraph photoSelect {
+    graph [
+        label="photoSelect — application architecture and data flow"
+        labelloc=t
+        fontsize=20
+        fontname="Arial"
+        rankdir=LR
+        bgcolor="#f8fafc"
+        pad=0.25
+        nodesep=0.55
+        ranksep=0.85
+        splines=polyline
+    ];
+    node [
+        shape=box
+        style="rounded,filled"
+        fontname="Arial"
+        fontsize=11
+        color="#475569"
+        fillcolor="white"
+        fontcolor="#0f172a"
+        margin="0.16,0.10"
+    ];
+    edge [
+        fontname="Arial"
+        fontsize=9
+        color="#64748b"
+        fontcolor="#334155"
+        arrowsize=0.75
+    ];
+
+    subgraph cluster_app {
+        label="Application"
+        fontname="Arial"
+        fontsize=14
+        color="#94a3b8"
+        style="rounded"
+        app [label="photoSelect.py\nPhotoSelect controller\nTkinter events • navigation • coordination", fillcolor="#dbeafe"];
+        display [label="display_mgr.py\nDisplayManager\nimage canvas • info panel • comments • favorites", fillcolor="#e0e7ff"];
+        queue [label="Worker/UI queue\nper-directory progress\nscan completion + status"];
+        app -> display [label="updates UI"];
+        app -> queue [label="consumes messages"];
+        queue -> app [label="after() polling"];
+    }
+
+    subgraph cluster_scan {
+        label="Directory scanning"
+        fontname="Arial"
+        fontsize=14
+        color="#86efac"
+        style="rounded"
+        folder [label="Selected photo directory\nrecursive tree"];
+        scanner [label="dir_scan.py\nfilter supported extensions\nbuild photo records"];
+        filedate [label="EXIF capture date\nfallback: file mtime"];
+        worker [label="Background scan worker\nupdates in-memory photos"];
+        folder -> scanner;
+        scanner -> filedate [label="each image"];
+        scanner -> worker [label="directory batches"];
+    }
+
+    subgraph cluster_services {
+        label="Libraries and external services"
+        fontname="Arial"
+        fontsize=14
+        color="#c4b5fd"
+        style="rounded"
+        metadata [label="photo_metadata.py\nExifTool access • GPS parsing\ncomment I/O • cache filtering"];
+        dbaccess [label="db_access.py\nPhotoDB\nSQLite schema • migrations • queries", fillcolor="#fef3c7"];
+        sqlite [shape=cylinder, label="photos.db\nfavorites • EXIF/GPS cache\nfile and directory-name data", fillcolor="#fef3c7"];
+        raw [label="Image decoders\nrawpy → ImageMagick fallback\nPillow for regular images", fillcolor="#f1f5f9"];
+        geocoder [label="Nominatim reverse geocoding\nvia optional requests", fillcolor="#f1f5f9"];
+        metadata -> geocoder [label="GPS coordinates"];
+        dbaccess -> sqlite;
+    }
+
+    app -> folder [label="startup / rescan / choose directory"];
+    worker -> queue [label="progress + completion"];
+    worker -> dbaccess [label="register photos"];
+    worker -> app [label="photo records"];
+    app -> dbaccess [label="photo info • favorites • cache actions"];
+    app -> metadata [label="read/write EXIF • comments • GPS"];
+    app -> raw [label="decode selected image"];
+    metadata -> dbaccess [label="GPS/location updates"];
+    dbaccess -> app [label="stored metadata"];
+    raw -> display [label="decoded image"];
+    metadata -> display [label="comments + camera metadata"];
+    display -> app [label="favorite/comment callbacks"];
+}
