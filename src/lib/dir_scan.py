@@ -1,6 +1,7 @@
 """Directory scanning helpers for photoSelect."""
 
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections.abc import Callable, Iterator
 from datetime import datetime
 from pathlib import Path
@@ -50,29 +51,67 @@ def get_file_date(filepath: str) -> datetime:
         return datetime.fromtimestamp(0)
 
 
+def _scan_subdirectory(
+    root_dir: str,
+    filenames: list[str],
+    is_running: Callable[[], bool],
+) -> tuple[str, list[PhotoRecord]]:
+    """Scan all supported photos in one directory."""
+    dir_photos = []
+    for filename in filenames:
+        if not is_running():
+            break
+        filepath = os.path.join(root_dir, filename)
+        dir_photos.append({
+            'path': filepath,
+            'date': get_file_date(filepath),
+            'name': filename,
+            'dir': root_dir,
+        })
+    return root_dir, dir_photos
+
+
 def scan_directory(
     start_dir: str,
     is_running: Callable[[], bool],
-    on_photo_found: Callable[[str], None],
+    threads: int = 1,
 ) -> Iterator[tuple[str, list[PhotoRecord]]]:
-    """Yield photos grouped by directory, stopping when the scan is cancelled."""
+    """Yield scanned photo directories using up to *threads* workers."""
+    if threads < 1:
+        raise ValueError("threads must be at least 1")
+
     start_path = Path(start_dir).resolve()
+    subdirectories: list[tuple[str, list[str]]] = []
     for root_dir, _dirs, files in os.walk(start_path):
         if not is_running():
             break
-        dir_photos = []
-        for filename in files:
+        supported_files = [
+            filename for filename in files
+            if Path(filename).suffix.lower() in SUPPORTED_EXTS
+        ]
+        if supported_files:
+            subdirectories.append((root_dir, supported_files))
+
+    if threads == 1:
+        for root_dir, filenames in subdirectories:
             if not is_running():
                 break
-            if Path(filename).suffix.lower() not in SUPPORTED_EXTS:
-                continue
-            filepath = os.path.join(root_dir, filename)
-            dir_photos.append({
-                'path': filepath,
-                'date': get_file_date(filepath),
-                'name': filename,
-                'dir': root_dir,
-            })
-            on_photo_found(filepath)
-        if dir_photos and is_running():
-            yield root_dir, dir_photos
+            _root_dir, dir_photos = _scan_subdirectory(
+                root_dir, filenames, is_running
+            )
+            if dir_photos and is_running():
+                yield root_dir, dir_photos
+        return
+
+    with ThreadPoolExecutor(max_workers=threads) as executor:
+        futures = {
+            executor.submit(_scan_subdirectory, root_dir, filenames, is_running):
+            root_dir
+            for root_dir, filenames in subdirectories
+        }
+        for future in as_completed(futures):
+            if not is_running():
+                break
+            root_dir, dir_photos = future.result()
+            if dir_photos and is_running():
+                yield root_dir, dir_photos

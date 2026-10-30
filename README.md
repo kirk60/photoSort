@@ -57,6 +57,13 @@ absolute path):
 python3 src/photoSelect.py --in-dir photos/2024
 ```
 
+Use `--threads N` to scan up to `N` directories concurrently. Each worker
+handles one directory at a time; the default is one scanning thread:
+
+```bash
+python3 src/photoSelect.py --in-dir photos/2024 --threads 4
+```
+
 You can also choose another directory from **File → Select Directory...**
 while the application is running.
 

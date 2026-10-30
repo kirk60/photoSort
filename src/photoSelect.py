@@ -35,7 +35,7 @@ GPS_UNAVAILABLE = "Not Available"
 
 
 class PhotoSelect:
-    def __init__(self, root):
+    def __init__(self, root, scan_threads=1):
         self.root = root
         self.root.title("photoSelect")
         self.root.geometry("1400x800")
@@ -47,6 +47,7 @@ class PhotoSelect:
         self.photo_image = None
         self.db = None
         self.scan_root = '.'
+        self.scan_threads = scan_threads
         self.scan_thread = None
         self.scan_running = False
         self.update_queue = queue.Queue()
@@ -412,14 +413,7 @@ class PhotoSelect:
             for root_dir, dir_photos in scan_directory(
                 start_dir,
                 lambda: self.scan_running,
-                lambda filepath: (
-                    self.db.insert_photos_bulk(
-                        db_conn,
-                        [filepath],
-                        update_sequences=False,
-                    )
-                    if self.db else None
-                ),
+                threads=self.scan_threads,
             ):
                 with self.photos_lock:
                     self.photos.extend(dir_photos)
@@ -431,14 +425,6 @@ class PhotoSelect:
                     )
                 self.update_queue.put(('dir_complete', root_dir))
             if self.scan_running:
-                if self.db:
-                    with self.photos_lock:
-                        all_photos = list(self.photos)
-                    self.db.insert_photos_bulk(
-                        db_conn,
-                        [p['path'] for p in all_photos],
-                        update_sequences=False,
-                    )
                 if self.db and db_conn:
                     self.db.refresh_directory_order_and_names(db_conn)
                 self.update_queue.put(('scan_complete', None))
@@ -763,7 +749,14 @@ def main():
     parser = argparse.ArgumentParser(description='photoSelect - browse photos chronologically')
     parser.add_argument('--in-dir', metavar='DIR', default='.',
                         help='directory to start the photo scan in (relative to cwd, default: current directory)')
+    parser.add_argument(
+        '--threads', metavar='N', type=int, default=1,
+        help='number of parallel directory-scanning threads (default: 1)',
+    )
     args = parser.parse_args()
+
+    if args.threads < 1:
+        parser.error('--threads must be at least 1')
 
     scan_dir = os.path.normpath(os.path.join(os.getcwd(), args.in_dir))
     if not os.path.isdir(scan_dir):
@@ -771,7 +764,7 @@ def main():
         sys.exit(1)
 
     root = tk.Tk()
-    app = PhotoSelect(root)
+    app = PhotoSelect(root, scan_threads=args.threads)
     app.scan_directory(scan_dir)
     root.mainloop()
 
