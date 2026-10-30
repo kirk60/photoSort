@@ -16,6 +16,7 @@ from tkinter import messagebox, filedialog, ttk
 import numpy as np
 from lib.display_mgr import DisplayManager
 from lib.dir_scan import scan_directory
+from lib.exports import export_favorites
 from lib import photo_metadata
 
 try:
@@ -106,6 +107,7 @@ class PhotoSelect:
         file_menu.add_command(label="Toggle Favorite (f)", command=self.toggle_favorite)
         file_menu.add_command(label="Rescan Directory (r)", command=self.rescan)
         file_menu.add_command(label="Select Directory...", command=self.select_directory)
+        file_menu.add_command(label="Export", command=self.export)
         file_menu.add_separator()
         file_menu.add_command(label="Exit (Esc/q)", command=self.quit_app)
         
@@ -411,20 +413,34 @@ class PhotoSelect:
                 start_dir,
                 lambda: self.scan_running,
                 lambda filepath: (
-                    self.db.insert_photos_bulk(db_conn, [filepath])
+                    self.db.insert_photos_bulk(
+                        db_conn,
+                        [filepath],
+                        update_sequences=False,
+                    )
                     if self.db else None
                 ),
             ):
                 with self.photos_lock:
                     self.photos.extend(dir_photos)
                 if self.db:
-                    self.db.insert_photos_bulk(db_conn, [p['path'] for p in dir_photos])
+                    self.db.insert_photos_bulk(
+                        db_conn,
+                        [p['path'] for p in dir_photos],
+                        update_sequences=False,
+                    )
                 self.update_queue.put(('dir_complete', root_dir))
             if self.scan_running:
                 if self.db:
                     with self.photos_lock:
                         all_photos = list(self.photos)
-                    self.db.insert_photos_bulk(db_conn, [p['path'] for p in all_photos])
+                    self.db.insert_photos_bulk(
+                        db_conn,
+                        [p['path'] for p in all_photos],
+                        update_sequences=False,
+                    )
+                if self.db and db_conn:
+                    self.db.refresh_directory_order_and_names(db_conn)
                 self.update_queue.put(('scan_complete', None))
             if db_conn:
                 try:
@@ -442,6 +458,24 @@ class PhotoSelect:
         directory = filedialog.askdirectory(title="Select Directory to Scan")
         if directory:
             self.scan_directory(directory)
+
+    def export(self):
+        if not self.db:
+            messagebox.showerror("Export failed", "The favorites database is not available.")
+            return
+        try:
+            destination_dir, exported_count = export_favorites(self.db, self.scan_root)
+        except (OSError, RuntimeError, ValueError) as error:
+            messagebox.showerror("Export failed", str(error))
+            return
+
+        if exported_count == 0:
+            messagebox.showinfo("Export", "No favorite photos to export.")
+            return
+        messagebox.showinfo(
+            "Export complete",
+            f"Exported {exported_count} favorite photos to:\n{destination_dir}",
+        )
     
     def show_controls(self):
         messagebox.showinfo("Controls", 
@@ -693,6 +727,11 @@ class PhotoSelect:
             popup.destroy()
         except Exception:
             pass
+        if populate_locations and not self.db.refresh_export_names():
+            messagebox.showerror(
+                "Export names not updated",
+                "Location cache processing finished, but export names could not be refreshed.",
+            )
         if populate_locations:
             status = (
                 f"Done. Cached locations for {count_done} photos. "

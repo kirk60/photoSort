@@ -71,7 +71,9 @@ class PhotoDB:
             date_from_file TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             date_from_name TEXT,
             city_from_name TEXT,
-            loc_details_from_name TEXT
+            loc_details_from_name TEXT,
+            export_name TEXT,
+            dir_sequence INTEGER
         )''')
 
         cur.execute("PRAGMA table_info(photos)")
@@ -100,7 +102,9 @@ class PhotoDB:
                 date_from_file TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 date_from_name TEXT,
                 city_from_name TEXT,
-                loc_details_from_name TEXT
+                loc_details_from_name TEXT,
+                export_name TEXT,
+                dir_sequence INTEGER
             )''')
             cur.execute('SELECT * FROM photos')
             old_columns = [column[0] for column in cur.description]
@@ -148,10 +152,12 @@ class PhotoDB:
         cols = {r[1] for r in cur.fetchall()}
         for col in (
             'gps_from_file', 'city_from_gps', 'country_from_gps', 'date_from_name',
-            'city_from_name', 'loc_details_from_name',
+            'city_from_name', 'loc_details_from_name', 'export_name',
         ):
             if col not in cols:
                 cur.execute(f'ALTER TABLE photos ADD COLUMN {col} TEXT')
+        if 'dir_sequence' not in cols:
+            cur.execute('ALTER TABLE photos ADD COLUMN dir_sequence INTEGER')
 
         cur.execute(
             'SELECT id, path, favorite, gps_from_file, city_from_gps, country_from_gps, '
@@ -250,7 +256,137 @@ class PhotoDB:
         )
         return date_from_name, city_from_name, loc_details_from_name
 
-    def _insert_photo(self, cur: 'sqlite3.Cursor', filepath: str):
+    @staticmethod
+    def _make_export_name(
+        date: str | None,
+        country: str | None,
+        gps_city: str | None,
+        name_city: str | None,
+        location: str | None,
+    ) -> str:
+        """Build an underscore-separated name, omitting unavailable components."""
+        city = gps_city or name_city
+        return '_'.join(
+            value.strip()
+            for value in (date, country, city, location)
+            if value and value.strip()
+        )
+
+    @classmethod
+    def _refresh_export_name(cls, cur: 'sqlite3.Cursor', stored_path: str) -> None:
+        cur.execute(
+            'SELECT date_from_name, country_from_gps, city_from_gps, '
+            'city_from_name, loc_details_from_name, dir_sequence '
+            'FROM photos WHERE path = ?',
+            (stored_path,),
+        )
+        row = cur.fetchone()
+        if row:
+            name = cls._make_export_name(*row[:5])
+            if row[5] is not None:
+                name = f'{name}_{row[5]:03d}'
+            cur.execute(
+                'UPDATE photos SET export_name = ? WHERE path = ?',
+                (name, stored_path),
+            )
+
+    @classmethod
+    def _make_sequenced_export_name(
+        cls,
+        date: str | None,
+        country: str | None,
+        gps_city: str | None,
+        name_city: str | None,
+        location: str | None,
+        sequence: int | None,
+    ) -> str:
+        name = cls._make_export_name(date, country, gps_city, name_city, location)
+        return f'{name}_{sequence:03d}' if sequence is not None else name
+
+    def refresh_export_names(self) -> bool:
+        """Rebuild export names from current location metadata and sequences."""
+        if not self.conn:
+            return False
+        try:
+            cur = self.conn.cursor()
+            cur.execute(
+                'SELECT id, date_from_name, country_from_gps, city_from_gps, '
+                'city_from_name, loc_details_from_name, dir_sequence FROM photos'
+            )
+            updates = [
+                (
+                    self._make_sequenced_export_name(
+                        date, country, gps_city, name_city, location, sequence,
+                    ),
+                    photo_id,
+                )
+                for (
+                    photo_id, date, country, gps_city, name_city, location, sequence,
+                ) in cur.fetchall()
+            ]
+            cur.executemany(
+                'UPDATE photos SET export_name = ? WHERE id = ?',
+                updates,
+            )
+            self.conn.commit()
+            return True
+        except Exception as error:
+            self.conn.rollback()
+            print(f"DB export name refresh error: {error}", file=sys.stderr)
+            return False
+
+    @staticmethod
+    def _refresh_directory_order_and_names(
+        cur: 'sqlite3.Cursor', directory: str | None = None,
+    ) -> None:
+        """Assign directory order and matching export names together."""
+        if directory is None:
+            cur.execute('SELECT id, path, date_from_file, date_from_name, '
+                        'country_from_gps, city_from_gps, city_from_name, '
+                        'loc_details_from_name FROM photos '
+                        'ORDER BY date_from_file, path')
+        elif directory:
+            prefix = directory + os.sep
+            cur.execute(
+                'SELECT id, path, date_from_file, date_from_name, '
+                'country_from_gps, city_from_gps, city_from_name, '
+                'loc_details_from_name FROM photos '
+                'WHERE substr(path, 1, ?) = ? ORDER BY date_from_file, path',
+                (len(prefix), prefix),
+            )
+        else:
+            cur.execute(
+                'SELECT id, path, date_from_file, date_from_name, '
+                'country_from_gps, city_from_gps, city_from_name, '
+                'loc_details_from_name FROM photos '
+                'WHERE instr(path, ?) = 0 ORDER BY date_from_file, path',
+                (os.sep,),
+            )
+
+        sequence_by_dir = {}
+        updates = []
+        for (
+            photo_id, filepath, _date_from_file, date, country,
+            gps_city, name_city, location,
+        ) in cur.fetchall():
+            path_dir = os.path.dirname(filepath)
+            sequence = sequence_by_dir.get(path_dir, 0) + 1
+            sequence_by_dir[path_dir] = sequence
+            export_name = PhotoDB._make_sequenced_export_name(
+                date, country, gps_city, name_city, location, sequence,
+            )
+            updates.append((sequence, export_name, photo_id))
+        cur.executemany(
+            'UPDATE photos SET dir_sequence = ?, export_name = ? WHERE id = ?',
+            updates,
+        )
+
+    def _insert_photo(
+        self,
+        cur: 'sqlite3.Cursor',
+        filepath: str,
+        refresh_directory_order: bool = True,
+    ):
         """Register a photo and refresh its recorded modification time."""
         stored_path = self._normalize_path(filepath)
         date_from_name, city_from_name, loc_details_from_name = (
@@ -268,6 +404,8 @@ class PhotoDB:
             (stored_path, self._get_image_date(filepath), date_from_name,
              city_from_name, loc_details_from_name),
         )
+        if refresh_directory_order:
+            self._refresh_directory_order_and_names(cur, os.path.dirname(stored_path))
 
     def close(self):
         """Close the database connection."""
@@ -303,17 +441,36 @@ class PhotoDB:
         except Exception as e:
             print(f"DB insert error: {e}", file=sys.stderr)
 
-    def insert_photos_bulk(self, conn: 'sqlite3.Connection', filepaths: 'list[str]'):
+    def insert_photos_bulk(
+        self,
+        conn: 'sqlite3.Connection',
+        filepaths: 'list[str]',
+        update_sequences: bool = True,
+    ):
         """Insert multiple paths via an existing (thread-local) *conn*."""
         if not conn:
             return
         try:
             cur = conn.cursor()
+            directories = set()
             for path in filepaths:
-                self._insert_photo(cur, path)
+                stored_path = self._normalize_path(path)
+                directories.add(os.path.dirname(stored_path))
+                self._insert_photo(cur, path, refresh_directory_order=False)
+            if update_sequences:
+                for directory in directories:
+                    self._refresh_directory_order_and_names(cur, directory)
             conn.commit()
         except Exception:
             pass
+
+    def refresh_directory_order_and_names(
+        self, conn: 'sqlite3.Connection',
+    ) -> None:
+        """Refresh directory sequences and export names in one transaction."""
+        cur = conn.cursor()
+        self._refresh_directory_order_and_names(cur)
+        conn.commit()
 
     # ------------------------------------------------------------------
     # Favorites
@@ -355,6 +512,23 @@ class PhotoDB:
         except Exception as e:
             print(f"Error listing favorites: {e}", file=sys.stderr)
             return []
+
+    def list_favorites_for_export(self) -> 'list[tuple[str, str | None]]':
+        """Return each favorite's resolved path and stored export name."""
+        if not self.conn:
+            raise RuntimeError("The favorites database is not available.")
+        try:
+            cur = self.conn.cursor()
+            cur.execute(
+                'SELECT path, export_name FROM photos '
+                'WHERE favorite = 1 ORDER BY path'
+            )
+            return [
+                (self._resolve_path(path), export_name)
+                for path, export_name in cur.fetchall()
+            ]
+        except sqlite3.Error as error:
+            raise RuntimeError(f"Could not list favorite export names: {error}") from error
 
     # ------------------------------------------------------------------
     # GPS / location cache
@@ -452,6 +626,7 @@ class PhotoDB:
                 (city.strip() or None, country.strip() or None if separator else None,
                  stored_path),
             )
+            self._refresh_export_name(cur, stored_path)
             self.conn.commit()
         except Exception as e:
             print(f"DB location cache error: {e}", file=sys.stderr)
@@ -512,6 +687,7 @@ class PhotoDB:
                     (city.strip() or None, country.strip() or None if separator else None,
                      stored_path),
                 )
+            self._refresh_export_name(cur, stored_path)
             self.conn.commit()
             return True
         except Exception as e:
